@@ -22,9 +22,9 @@ cargo run --release ./models/stories/stories15M.bin
 
 ### Enabling BLAS
 
-BLAS isn't enabled by default as it requires some pre-installation and is, for some reason, slower when mixed with multithreading. Single-threaded, it's faster than anything else though.
+[BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms) isn't enabled by default as it requires some pre-installation and is, for some reason, slower when mixed with multithreading. Single-threaded, it's faster than anything else though.
 
-To enable [BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms):
+To enable BLAS:
 
 * Install openblas.
 * Uncomment the BLAS dependencies in `Cargo.toml`.
@@ -38,6 +38,9 @@ A list of future developments for the project:
 * Use a Cargo feature to enable BLAS.
 * Quantizations. This is particularly important due to the fact that Pecca avoids using mmap for safety. Right now llama2 7B will only work if you have 64GB of RAM due to the use of f32 throughout. Using f16 was attempted but is very slow.
 * Support for prompts.
+* See why BLAS is slower than pure multi-threading when the 2 features are mixed.
 * Inference performance and general memory footprint during inference.
+* Explore extending ndarray `dot` operation to support cublas or Metal.
+* Additional parallelization of independent operations.
 * Various refactoring.
 * Support for additional models.

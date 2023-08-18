@@ -1,5 +1,5 @@
 
-mod llama2c;
+mod llama2;
 
 // Quantization papers:
 //   * SmoothQuant - https://arxiv.org/pdf/2211.10438.pdf
@@ -7,5 +7,5 @@ mod llama2c;
 //   * The case for 4 bit precision - https://arxiv.org/pdf/2212.09720.pdf
 
 fn main() {
-  llama2c::gen();
+  llama2::gen();
 }
