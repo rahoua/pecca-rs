@@ -1,0 +1,17 @@
+[package]
+name = "pecca-rs"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[dependencies]
+byteorder = "1.4.3"
+ndarray = { version = "0.15.6", features = ["rayon"] }
+# blas-src = { version = "0.8", features = ["openblas"] }
+# openblas-src = { version = "0.10", features = ["cblas", "system"] }
+num-derive = "0.4.0"
+num-traits = "0.2.15"
+rand = "0.8.5"
