@@ -20,10 +20,22 @@ wget -P ./models/stories/  https://huggingface.co/karpathy/tinyllamas/resolve/ma
 cargo run --release ./models/stories/stories15M.bin
 ```
 
+### Enabling BLAS
+
+BLAS isn't enabled by default as it requires some pre-installation and is, for some reason, slower when mixed with multithreading. Single-threaded, it's faster than anything else though.
+
+To enable [BLAS](https://en.wikipedia.org/wiki/Basic_Linear_Algebra_Subprograms):
+
+* Install openblas.
+* Uncomment the BLAS dependencies in `Cargo.toml`.
+* Uncomment `extern crate blas_src;` at the top of `src/llama2c.rs`.
+* Optionally update references to `par_azip!` by `azip!` to remove multi-threading.
+
 ## Direction
 
 A list of future developments for the project:
 
+* Use a Cargo feature to enable BLAS.
 * Quantizations. This is particularly important due to the fact that Pecca avoids using mmap for safety. Right now llama2 7B will only work if you have 64GB of RAM due to the use of f32 throughout. Using f16 was attempted but is very slow.
 * Support for prompts.
 * Inference performance and general memory footprint during inference.
