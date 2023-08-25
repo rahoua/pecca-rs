@@ -1,8 +1,4 @@
 
-// When single-threaded, blas is fastest but with multithreading in rayon it
-// somehow slows things down at least on small models. May be worth investigating.
-// extern crate blas_src;
-
 use std::env;
 use std::fs::File;
 use std::io::{self, Write, BufReader};
@@ -11,9 +7,9 @@ use std::time::Instant;
 use num_traits::cast::AsPrimitive;
 use rand::Rng;
 use ndarray::prelude::*;
-use ndarray::par_azip;
 
 use crate::llama2::model::*;
+use crate::llama2::quant::*;
 
 // Activations type, placeholder for quantization
 type ATy = f32;
@@ -21,20 +17,16 @@ type ATy = f32;
 const ATY_ZERO: ATy = 0.0;
 const ATY_ONE: ATy = 1.0;
 
-fn deq(w: WTy) -> ATy {
-    w // .to_f32()
-}
-
 // Generic vector and matrix functions used for inference
 
-fn rmsnorm(o: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, weight: ArrayView1<WTy>) {
+fn rmsnorm(o: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, weight: QintArrayView1<WTy>) {
     // calculate sum of squares
     let xlen: ATy = x.len().as_();
     let low_val: ATy = 1e-5.as_();
     let ss = (x.dot(&x) / xlen + low_val).sqrt().recip();
 
     // normalize and scale
-    azip!((o_val in o, &x_val in x, &weight_val in weight.mapv(deq).view()) {
+    azip!((o_val in o, &x_val in x, &weight_val in weight.to_f32().view()) {
         *o_val = weight_val * ss * x_val;
     });
 }
@@ -45,15 +37,15 @@ fn softmax(mut x: ArrayViewMut1<ATy>) {
     x /= x.sum();
 }
 
-fn matmul(xout: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, w: ArrayView2<WTy>) {
-    debug_assert_eq!(w.shape(), &[xout.len(), x.len()]);
+fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, w: &'a QintArrayView2<'a, WTy>) {
+    debug_assert_eq!(w.arr.shape(), &[xout.len(), x.len()]);
+    let quant_x = QintArray1::from(x);
 
-    // almost all execution time is spent here, worth finicking with
-    par_azip!((out_val in xout, row in w.outer_iter()) {
-        *out_val = row.dot(&x);
-    });
+    // par_azip!((out_val in xout, row in w.outer_iter()) {
+    //     *out_val = quant_row.dot_deq(&quant_x);
+    // });
     // One-liner version, without multithreading
-    // xout.assign(&w.dot(&x));
+    xout.assign(&w.dot(quant_x.view()));
 }
 
 // sine and cosine tables for RoPE
@@ -103,7 +95,7 @@ impl RunState {
     pub fn transformer(&mut self, token: usize, pos: usize, conf: &Config, w: &Weights) {
         let sin_cos = sin_cos(pos, conf);
         // copy the token embedding into x
-        self.x.assign(&w.tet.index_axis(Axis(0), token));
+        self.x.assign(&w.tet.index_axis(Axis(0), token).to_f32().view());
 
         // forward all the layers
         for l in 0..conf.n_layers {
@@ -111,9 +103,9 @@ impl RunState {
             rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_att_weight.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
-            matmul(self.q.view_mut(), self.xb.view(), w.wq.index_axis(Axis(0), l));
-            matmul(self.k.view_mut(), self.xb.view(), w.wk.index_axis(Axis(0), l));
-            matmul(self.v.view_mut(), self.xb.view(), w.wv.index_axis(Axis(0), l));
+            matmul(self.q.view_mut(), self.xb.view(), &w.wq.index_axis(Axis(0), l));
+            matmul(self.k.view_mut(), self.xb.view(), &w.wk.index_axis(Axis(0), l));
+            matmul(self.v.view_mut(), self.xb.view(), &w.wv.index_axis(Axis(0), l));
 
             self.rope_enc(&sin_cos, conf);
 
@@ -121,7 +113,7 @@ impl RunState {
             self.attention(l, pos, conf);
 
             // final matmul to get the output of the attention
-            matmul(self.xb2.view_mut(), self.xb.view(), w.wo.index_axis(Axis(0), l));
+            matmul(self.xb2.view_mut(), self.xb.view(), &w.wo.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb2.view();
@@ -131,8 +123,8 @@ impl RunState {
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
-            matmul(self.hb.view_mut(), self.xb.view(), w.w1.index_axis(Axis(0), l));
-            matmul(self.hb2.view_mut(), self.xb.view(), w.w3.index_axis(Axis(0), l));
+            matmul(self.hb.view_mut(), self.xb.view(), &w.w1.index_axis(Axis(0), l));
+            matmul(self.hb2.view_mut(), self.xb.view(), &w.w3.index_axis(Axis(0), l));
 
             // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
             self.hb.iter_mut().for_each(|value| {
@@ -142,7 +134,7 @@ impl RunState {
             self.hb *= &self.hb2;
 
             // final matmul
-            matmul(self.xb.view_mut(), self.hb.view(), w.w2.index_axis(Axis(0), l));
+            matmul(self.xb.view_mut(), self.hb.view(), &w.w2.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb;
@@ -152,7 +144,7 @@ impl RunState {
         rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_final_weight.view());
 
         // Class logits
-        matmul(self.logits.view_mut(), self.xb.view(), w.wcls.view());
+        matmul(self.logits.view_mut(), self.xb.view(), &w.wcls.view());
     }
 
     // Multihead attention calculation, iterates over all heads
@@ -230,7 +222,7 @@ pub fn sample(probabilities: ArrayView1<ATy>) -> Option<usize> {
 
 pub fn argmax(v: ArrayView1<ATy>) -> Option<usize> {
     v.iter().enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(index, _)| index)
 }
 

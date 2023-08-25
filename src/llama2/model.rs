@@ -8,8 +8,10 @@ use ndarray::StrideShape;
 use byteorder::{ReadBytesExt, LittleEndian};
 use num_traits::cast::AsPrimitive;
 
+use crate::llama2::quant::*;
+
 // Weights type, placeholder for quantization
-pub type WTy = f32;
+pub type WTy = i8;
 
 // The original format has 7 serialized fields of 4 bytes each
 const CONFIG_SIZE: usize = 7*4;
@@ -65,23 +67,24 @@ impl Config {
 }
 
 // All weights in the Llama2 model. Read in bulk from a binary file.
+// note dim == n_heads * head_size
 pub struct Weights {
-    pub tet: Array2<WTy>, // (vocab_size, dim) token embeddings table
-    pub rms_att_weight: Array2<WTy>, // (n_layers, dim) rmsnorm weights
-    pub rms_ffn_weight: Array2<WTy>, // (n_layers, dim)
-    pub wq: Array3<WTy>, // (n_layers, dim, (n_heads * head_size))
-    pub wk: Array3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
-    pub wv: Array3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
-    pub wo: Array3<WTy>, // (layer, (n_heads * head_size), dim)
-    pub w1: Array3<WTy>, // (n_layers, hidden_dim, dim)
-    pub w2: Array3<WTy>, // (n_layers, dim, hidden_dim)
-    pub w3: Array3<WTy>, // (n_layers, hidden_dim, dim)
-    pub rms_final_weight: Array1<WTy>, // (dim)
-    pub wcls: Array2<WTy>, // (dim, vocab_size) optional, classifier weights for logits, on the last layer
+    pub tet: QintArray2<WTy>, // (vocab_size, dim) token embeddings table
+    pub rms_att_weight: QintArray2<WTy>, // (n_layers, dim) rmsnorm weights
+    pub rms_ffn_weight: QintArray2<WTy>, // (n_layers, dim)
+    pub wq: QintArray3<WTy>, // (n_layers, dim, (n_heads * head_size))
+    pub wk: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
+    pub wv: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
+    pub wo: QintArray3<WTy>, // (layer, (n_heads * head_size), dim)
+    pub w1: QintArray3<WTy>, // (n_layers, hidden_dim, dim)
+    pub w2: QintArray3<WTy>, // (n_layers, dim, hidden_dim)
+    pub w3: QintArray3<WTy>, // (n_layers, hidden_dim, dim)
+    pub rms_final_weight: QintArray1<WTy>, // (dim)
+    pub wcls: QintArray2<WTy>, // (dim, vocab_size) optional, classifier weights for logits, on the last layer
 }
 
 // Utility function to read f32s from file into an ndarray of the provided dimension
-fn read_f32<R, S, D>(buf: &mut BufReader<R>, shape: S) -> Array<WTy, D>
+fn read_f32<R, S, D>(buf: &mut BufReader<R>, shape: S) -> Array<f32, D>
 where
 D: Dimension, 
     S: Into<StrideShape<D>>,
@@ -99,23 +102,24 @@ D: Dimension,
 impl Weights {
 
     pub fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
-        let tet = read_f32(buf, (conf.vocab_size, conf.dim));
+        let kv_dim = conf.n_kv_heads * conf.head_size();
+        let tet: QintArray2<WTy> = read_f32(buf, (conf.vocab_size, conf.dim)).view().into();
         Weights {
             tet: tet.clone(),
-            rms_att_weight: read_f32(buf, (conf.n_layers, conf.dim)),
-            wq: read_f32(buf, (conf.n_layers, conf.dim, conf.n_heads * conf.head_size())),
-            wk: read_f32(buf, (conf.n_layers, conf.dim, conf.n_kv_heads * conf.head_size())),
-            wv: read_f32(buf, (conf.n_layers, conf.dim, conf.n_kv_heads * conf.head_size())),
-            wo: read_f32(buf, (conf.n_layers, conf.n_heads * conf.head_size(), conf.dim)),
-            rms_ffn_weight: read_f32(buf, (conf.n_layers, conf.dim)),
-            w1: read_f32(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            w2: read_f32(buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
-            w3: read_f32(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final_weight: read_f32(buf, conf.dim),
+            rms_att_weight: read_f32(buf, (conf.n_layers, conf.dim)).view().into(),
+            wq: read_f32(buf, (conf.n_layers, conf.dim, conf.dim)).view().into(),
+            wk: read_f32(buf, (conf.n_layers, conf.dim, kv_dim)).view().into(),
+            wv: read_f32(buf, (conf.n_layers, conf.dim, kv_dim)).view().into(),
+            wo: read_f32(buf, (conf.n_layers, conf.dim, conf.dim)).view().into(),
+            rms_ffn_weight: read_f32(buf, (conf.n_layers, conf.dim)).view().into(),
+            w1: read_f32(buf, (conf.n_layers, conf.hidden_dim, conf.dim)).view().into(),
+            w2: read_f32(buf, (conf.n_layers, conf.dim, conf.hidden_dim)).view().into(),
+            w3: read_f32(buf, (conf.n_layers, conf.hidden_dim, conf.dim)).view().into(),
+            rms_final_weight: read_f32(buf, conf.dim).view().into(),
             wcls: if conf.shared_weights {
                 tet
             } else {
-                read_f32(buf, (conf.vocab_size, conf.dim))
+                read_f32(buf, (conf.vocab_size, conf.dim)).view().into()
             },
         }
     }
