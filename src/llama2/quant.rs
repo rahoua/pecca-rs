@@ -9,6 +9,32 @@ pub struct QintArray<T, D> where D: Dimension {
     pub arr: Array<T, D>
 }
 
+impl<T, D> QintArray<T, D> where D: Dimension {
+    pub fn len(&self) -> usize {
+        self.arr.len()
+    }
+
+    pub fn view(&self) -> QintArrayView<'_, T, D> {
+        QintArrayView {
+            scaling: self.scaling.view(),
+            arr: self.arr.view(),
+        }
+    }
+}
+
+impl<T, D> QintArray<T, D>
+where
+    D: RemoveAxis,
+    <D as ndarray::Dimension>::Smaller: RemoveAxis
+{
+    pub fn index_axis(&self, axis: Axis, index: usize) -> QintArrayView<'_, T, D::Smaller> {
+        QintArrayView {
+            scaling: self.scaling.index_axis(axis, index),
+            arr: self.arr.index_axis(axis, index),
+        }
+    }
+}
+
 // A quantized array constructed with a generic dimension
 #[derive(Debug, Clone)]
 pub struct QintArrayView<'a, T, D> where D: Dimension {
@@ -21,27 +47,26 @@ pub type QintArray1<T> = QintArray<T, Ix1>;
 
 pub type QintArrayView1<'a, T> = QintArrayView<'a, T, Ix1>;
 
-impl QintArrayView1<'_, i8> {
-    pub fn dot_deq(&self, other: &Self) -> f32 {
-        // almost all execution time is spent here, worth finicking with
-        debug_assert_eq!(self.arr.len(), other.arr.len());
-        let idot: i32 =
-            self.arr.iter()
-            .zip(other.arr.iter())
-            .map(|(&s, &o)| s as i32 * o as i32)
-            .sum();
-        // x1*f*y1*g + x2*f+y2*g + ... = f*g*(x1*y1 + x2*y2 + ...)
-        idot as f32 / (self.scaling[[]] * other.scaling[[]]) as f32
-    }
-}
-
 impl From<ArrayView1<'_, f32>> for QintArray1<i8> {
     fn from(fpa: ArrayView1<f32>) -> Self {
         quant_i8(fpa)
     }
 }
 
-impl<'a> QintArrayView1<'a, i8> {
+impl QintArrayView1<'_, i8> {
+    // almost all execution time is spent here, worth finicking with
+	fn dot_deq(&self, other: &Self) -> f32 {
+		debug_assert_eq!(self.arr.len(), other.arr.len());
+		let len = self.arr.len().min(other.arr.len());
+		let xs = &self.arr.as_slice().unwrap();
+		let ys = &other.arr.as_slice().unwrap();
+		let mut sum = 0;
+        for n in 0..len {
+            sum += xs[n] as i32 * ys[n] as i32;
+        }
+		sum as f32 / (self.scaling[[]] * other.scaling[[]])
+    }
+
     pub fn to_f32(self) -> Array1<f32> {
         dequant_i8(self)
     }
@@ -110,55 +135,6 @@ impl From<ArrayView3<'_, f32>> for QintArray3<i8> {
         }
     }
 }
-
-impl<T, D> QintArray<T, D>
-where
-    D: RemoveAxis,
-    <D as ndarray::Dimension>::Smaller: RemoveAxis
-{
-    pub fn index_axis(&self, axis: Axis, index: usize) -> QintArrayView<'_, T, D::Smaller> {
-        QintArrayView {
-            scaling: self.scaling.index_axis(axis, index),
-            arr: self.arr.index_axis(axis, index),
-        }
-    }
-}
-    
-impl<T, D> QintArray<T, D> where D: Dimension {
-    pub fn view(&self) -> QintArrayView<'_, T, D> {
-        QintArrayView {
-            scaling: self.scaling.view(),
-            arr: self.arr.view(),
-        }
-    }
-}
-
-// Implements a generic version of the From implementation using Dimension
-// as a type parameter on QintArray, Array and ArrayView.
-//
-// impl<D> QintArray<i8, D>
-// where
-//     D: Dimension + ndarray::RemoveAxis,
-//     <D as ndarray::Dimension>::Smaller: RemoveAxis,
-// {
-//     fn quant(fpa: ArrayView<f32, D>) -> QintArray<i8, D> {
-//         let mut qarr = Array::zeros(fpa.raw_dim());
-//         let mut scaling = Array::zeros(fpa.raw_dim().remove_axis(Axis(0)));
-//         azip!((
-//             row in fpa.outer_iter(),
-//             mut qrow in qarr.outer_iter_mut(),
-//             mut scale in scaling.outer_iter_mut(),
-//         ) {
-//             let qiarr = QintArray::quant(row);
-//             qarr.arr.move_into(qrow);
-//             qarr.scaling.move_into(scale);
-//         });
-//         QintArray {
-//             arr: qarr,
-//             scaling: scaling,
-//         }
-//     }
-// }
 
 fn quant_i8(fpa: ArrayView1<f32>) -> QintArray1<i8> {
     let (min, max) = fpa.iter().fold((f32::MAX, f32::MIN), |(min, max), &x| (min.min(x), max.max(x)));

@@ -7,6 +7,7 @@ use std::time::Instant;
 use num_traits::cast::AsPrimitive;
 use rand::Rng;
 use ndarray::prelude::*;
+use ndarray::par_azip;
 
 use crate::llama2::model::*;
 use crate::llama2::quant::*;
@@ -37,15 +38,10 @@ fn softmax(mut x: ArrayViewMut1<ATy>) {
     x /= x.sum();
 }
 
-fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, w: &'a QintArrayView2<'a, WTy>) {
+fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &QintArray1<WTy>, w: &'a QintArrayView2<'a, WTy>) {
     debug_assert_eq!(w.arr.shape(), &[xout.len(), x.len()]);
-    let quant_x = QintArray1::from(x);
 
-    // par_azip!((out_val in xout, row in w.outer_iter()) {
-    //     *out_val = quant_row.dot_deq(&quant_x);
-    // });
-    // One-liner version, without multithreading
-    xout.assign(&w.dot(quant_x.view()));
+    xout.assign(&w.dot(x.view()));
 }
 
 // sine and cosine tables for RoPE
@@ -103,9 +99,10 @@ impl RunState {
             rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_att_weight.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
-            matmul(self.q.view_mut(), self.xb.view(), &w.wq.index_axis(Axis(0), l));
-            matmul(self.k.view_mut(), self.xb.view(), &w.wk.index_axis(Axis(0), l));
-            matmul(self.v.view_mut(), self.xb.view(), &w.wv.index_axis(Axis(0), l));
+            let xbq = self.xb.view().into();
+            matmul(self.q.view_mut(), &xbq, &w.wq.index_axis(Axis(0), l));
+            matmul(self.k.view_mut(), &xbq, &w.wk.index_axis(Axis(0), l));
+            matmul(self.v.view_mut(), &xbq, &w.wv.index_axis(Axis(0), l));
 
             self.rope_enc(&sin_cos, conf);
 
@@ -113,7 +110,7 @@ impl RunState {
             self.attention(l, pos, conf);
 
             // final matmul to get the output of the attention
-            matmul(self.xb2.view_mut(), self.xb.view(), &w.wo.index_axis(Axis(0), l));
+            matmul(self.xb2.view_mut(), &self.xb.view().into(), &w.wo.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb2.view();
@@ -123,8 +120,9 @@ impl RunState {
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
-            matmul(self.hb.view_mut(), self.xb.view(), &w.w1.index_axis(Axis(0), l));
-            matmul(self.hb2.view_mut(), self.xb.view(), &w.w3.index_axis(Axis(0), l));
+            let xbq = self.xb.view().into();
+            matmul(self.hb.view_mut(), &xbq, &w.w1.index_axis(Axis(0), l));
+            matmul(self.hb2.view_mut(), &xbq, &w.w3.index_axis(Axis(0), l));
 
             // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
             self.hb.iter_mut().for_each(|value| {
@@ -134,7 +132,7 @@ impl RunState {
             self.hb *= &self.hb2;
 
             // final matmul
-            matmul(self.xb.view_mut(), self.hb.view(), &w.w2.index_axis(Axis(0), l));
+            matmul(self.xb.view_mut(), &self.hb.view().into(), &w.w2.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb;
@@ -144,7 +142,7 @@ impl RunState {
         rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_final_weight.view());
 
         // Class logits
-        matmul(self.logits.view_mut(), self.xb.view(), &w.wcls.view());
+        matmul(self.logits.view_mut(), &self.xb.view().into(), &w.wcls.view());
     }
 
     // Multihead attention calculation, iterates over all heads
@@ -159,7 +157,7 @@ impl RunState {
         let layer_key_cache = self.key_cache.index_axis(Axis(0), layer);
         let layer_value_cache = self.value_cache.index_axis(Axis(0), layer);
 
-        azip!((
+        par_azip!((
             index h,
             q in self.q.exact_chunks(hs),
             mut xb in self.xb.exact_chunks_mut(hs),

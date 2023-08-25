@@ -86,17 +86,34 @@ pub struct Weights {
 // Utility function to read f32s from file into an ndarray of the provided dimension
 fn read_f32<R, S, D>(buf: &mut BufReader<R>, shape: S) -> Array<f32, D>
 where
-D: Dimension, 
+    D: Dimension, 
     S: Into<StrideShape<D>>,
     R: Read,
 {
     let shape = shape.into();
     let mut ws = Vec::with_capacity(shape.size());
     let mut reader = buf.take((shape.size() * 4) as u64);
+    println!("Reading and quantizing {} weights", shape.size());
     while let Ok(val) = reader.read_f32::<LittleEndian>() {
         ws.push(val.as_());
     }
     Array::from_shape_vec(shape, ws).expect("read weights: shape mismatch")
+}
+
+fn read_f32_2<R, S>(buf: &mut BufReader<R>, shape: S) -> QintArray2<i8>
+where
+    S: Into<StrideShape<Ix2>>,
+    R: Read,
+{
+    read_f32(buf, shape).view().into()
+}
+
+fn read_f32_3<R, S>(buf: &mut BufReader<R>, shape: S) -> QintArray3<i8>
+where
+    S: Into<StrideShape<Ix3>>,
+    R: Read,
+{
+    read_f32(buf, shape).view().into()
 }
 
 impl Weights {
@@ -106,20 +123,20 @@ impl Weights {
         let tet: QintArray2<WTy> = read_f32(buf, (conf.vocab_size, conf.dim)).view().into();
         Weights {
             tet: tet.clone(),
-            rms_att_weight: read_f32(buf, (conf.n_layers, conf.dim)).view().into(),
-            wq: read_f32(buf, (conf.n_layers, conf.dim, conf.dim)).view().into(),
-            wk: read_f32(buf, (conf.n_layers, conf.dim, kv_dim)).view().into(),
-            wv: read_f32(buf, (conf.n_layers, conf.dim, kv_dim)).view().into(),
-            wo: read_f32(buf, (conf.n_layers, conf.dim, conf.dim)).view().into(),
-            rms_ffn_weight: read_f32(buf, (conf.n_layers, conf.dim)).view().into(),
-            w1: read_f32(buf, (conf.n_layers, conf.hidden_dim, conf.dim)).view().into(),
-            w2: read_f32(buf, (conf.n_layers, conf.dim, conf.hidden_dim)).view().into(),
-            w3: read_f32(buf, (conf.n_layers, conf.hidden_dim, conf.dim)).view().into(),
+            rms_att_weight: read_f32_2(buf, (conf.n_layers, conf.dim)),
+            wq: read_f32_3(buf, (conf.n_layers, conf.dim, conf.dim)),
+            wk: read_f32_3(buf, (conf.n_layers, conf.dim, kv_dim)),
+            wv: read_f32_3(buf, (conf.n_layers, conf.dim, kv_dim)),
+            wo: read_f32_3(buf, (conf.n_layers, conf.dim, conf.dim)),
+            rms_ffn_weight: read_f32_2(buf, (conf.n_layers, conf.dim)),
+            w1: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
+            w2: read_f32_3(buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
+            w3: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
             rms_final_weight: read_f32(buf, conf.dim).view().into(),
             wcls: if conf.shared_weights {
                 tet
             } else {
-                read_f32(buf, (conf.vocab_size, conf.dim)).view().into()
+                read_f32_2(buf, (conf.vocab_size, conf.dim))
             },
         }
     }
