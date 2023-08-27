@@ -1,13 +1,10 @@
 
 use std::collections::HashMap;
-use std::cmp::Ordering;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, BufReader};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use scan_fmt::scan_fmt;
-
 
 pub struct Tokenizer {
     vocab: Vec<String>,

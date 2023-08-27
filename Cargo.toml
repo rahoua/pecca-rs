@@ -2,6 +2,7 @@
 name = "pecca-rs"
 version = "0.1.0"
 edition = "2021"
+description = "Simple inference for the llama2 model and friends."
 
 [profile.release]
 lto = "fat"
@@ -10,8 +11,8 @@ debug = true
 
 [dependencies]
 byteorder = "1.4.3"
+clap = { version = "4.4.0", features = ["derive"] }
 ndarray = { version = "0.15.6", features = ["rayon"] }
 num-derive = "0.4.0"
 num-traits = "0.2.15"
 rand = "0.8.5"
-scan_fmt = "0.2.6"

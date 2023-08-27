@@ -225,17 +225,9 @@ pub fn argmax(v: ArrayView1<ATy>) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-pub fn gen() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        println!("Usage: {} <checkpoint_file> [temperature] [steps]", args[0]);
-        std::process::exit(1);
-    }
-    let temperature: ATy = args.get(2).map_or(0.9, |v| v.parse().expect("Fail parse temperature")).as_();
-    let steps: usize = args.get(3).map_or(256, |v| v.parse().expect("Failed to parse steps"));
-
+pub fn gen(model_file: String, temp: f32, steps: usize, prompt: Option<String>) {
     // Initialize config from file
-    let mut file = File::open(&args[1]).expect("Unable to open the checkpoint file");
+    let mut file = File::open(&model_file).expect("Unable to open the checkpoint file");
     let config = Config::from_file(&mut file).expect("Failed to read the config");
     println!("Model config: {:?}", config);
 
@@ -245,22 +237,27 @@ pub fn gen() {
 
     let steps = steps.max(1).min(config.seq_len);
 
-    // Load tokenizer
-    let tok = Tokenizer::read("./models/tokenizer.bin", config.vocab_size).expect("Failed to load tokenizer");
+    // Load tokenizer and process prompt
+    let tok = Tokenizer::read("./models/tokenizer.bin", config.vocab_size)
+        .expect("Failed to load tokenizer");
+    let prompt = prompt.unwrap_or_else(|| "".to_string());
+    let prompt_toks = tok.encode(&prompt, true, false);
 
     let mut state = RunState::new(&config);
     let start = Instant::now();
-    let mut token = 1; // BOS token
+    let mut token = prompt_toks[0];
     println!("<s>");
 
     for pos in 0..steps {
         state.transformer(token, pos, &config, &weights);
 
-        let next = if temperature == ATY_ZERO {
+        let next = if pos < prompt_toks.len() - 1 {
+            Some(prompt_toks[pos + 1])
+        } else if temp == ATY_ZERO {
             argmax(state.logits.view())
         } else {
             for logits in state.logits.iter_mut() {
-                *logits /= temperature;
+                *logits /= temp;
             }
             softmax(state.logits.view_mut());
             sample(state.logits.view())
