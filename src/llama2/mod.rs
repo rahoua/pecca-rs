@@ -4,6 +4,7 @@
 // extern crate blas_src;
 
 mod quant;
+mod tokenizer;
 mod model;
 mod llama2c;
 

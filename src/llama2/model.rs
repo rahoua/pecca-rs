@@ -141,35 +141,3 @@ impl Weights {
         }
     }
 }
-
-fn to_io_err(msg: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg.to_string())
-}
-
-pub fn load_tokenizer(config: &Config) -> io::Result<(Vec<String>, Vec<f32>)> {
-    let mut vocab: Vec<String> = Vec::with_capacity(config.vocab_size);
-    let mut vocab_scores: Vec<f32> = Vec::with_capacity(config.vocab_size);
-
-    let file = File::open("./models/tokenizer.bin")?;
-    let mut reader = BufReader::new(file);
-
-    let _ = reader.read_u32::<LittleEndian>()
-        .map_err(|_| to_io_err("Failed to read max token length"))?;
-
-    for _ in 0..config.vocab_size {
-        let vocab_score = reader.read_f32::<LittleEndian>()
-            .map_err(|_| to_io_err("Failed to read vocab score"))?;
-        vocab_scores.push(vocab_score);
-
-        let len = reader.read_u32::<LittleEndian>()
-            .map_err(|_| to_io_err("Failed to read token length"))? as usize;
-        let mut token_buffer = vec![0u8; len];
-        reader.read_exact(&mut token_buffer)
-            .map_err(|_| to_io_err("Failed to read token"))?;
-        let token = String::from_utf8(token_buffer)
-            .map_err(|_| to_io_err("Failed to convert bytes to UTF-8 string"))?;
-
-        vocab.push(token);
-    }
-    Ok((vocab, vocab_scores))
-}

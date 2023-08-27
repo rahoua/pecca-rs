@@ -11,6 +11,7 @@ use ndarray::par_azip;
 
 use crate::llama2::model::*;
 use crate::llama2::quant::*;
+use crate::llama2::tokenizer::*;
 
 // Activations type, placeholder for quantization
 type ATy = f32;
@@ -245,7 +246,7 @@ pub fn gen() {
     let steps = steps.max(1).min(config.seq_len);
 
     // Load tokenizer
-    let (vocab, _vocab_scores) = load_tokenizer(&config).expect("Failed to load tokenizer");
+    let tok = Tokenizer::read("./models/tokenizer.bin", config.vocab_size).expect("Failed to load tokenizer");
 
     let mut state = RunState::new(&config);
     let start = Instant::now();
@@ -265,7 +266,7 @@ pub fn gen() {
             sample(state.logits.view())
         };
 
-        print!("{}", vocab[next.unwrap()]);
+        print!("{}", tok.decode(token, next.unwrap()));
         io::stdout().flush().unwrap();
         token = next.unwrap();
     }

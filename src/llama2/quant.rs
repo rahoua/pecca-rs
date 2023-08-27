@@ -138,19 +138,15 @@ impl From<ArrayView3<'_, f32>> for QintArray3<i8> {
 
 fn quant_i8(fpa: ArrayView1<f32>) -> QintArray1<i8> {
     let (min, max) = fpa.iter().fold((f32::MAX, f32::MIN), |(min, max), &x| (min.min(x), max.max(x)));
-    let midpoint = (max + min) / 2.0;
-    // let scaling = i8::MAX as f32 / (max.abs() - midpoint);
     let scaling = i8::MAX as f32 / max.abs().max(min.abs());
     QintArray1 {
         scaling: Array::from_elem((), scaling),
-        // midpoint,
-        // arr: fpa.map(|x| ((x - midpoint) * scaling).round() as i8),
         arr: fpa.map(|x| (x * scaling).round() as i8),
     }
 }
 
 fn dequant_i8(ia: QintArrayView1<i8>) -> Array1<f32> {
-    ia.arr.mapv(|n| n as f32 / ia.scaling[[]]) // + ia.midpoint)
+    ia.arr.mapv(|n| n as f32 / ia.scaling[[]])
 }
 
 fn loss(fp1: ArrayView1<f32>, fp2: ArrayView1<f32>) -> f32 {
@@ -174,9 +170,7 @@ mod tests {
     #[test]
     fn it_has_little_loss() {
         let fpa = QintArray1 {
-            // scaling: 169.33333,
             scaling: 141.11111,
-            // midpoint: -0.15,
             arr: Array::from_vec(vec![-127, -49, -14, 28, 85]),
         };
         let dq_arr = dequant_i8(fpa);
