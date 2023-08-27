@@ -1,17 +1,10 @@
 
-use std::env;
-use std::fs::File;
-use std::io::{self, Write, BufReader};
-use std::time::Instant;
-
 use num_traits::cast::AsPrimitive;
-use rand::Rng;
 use ndarray::prelude::*;
 use ndarray::par_azip;
 
 use crate::llama2::model::*;
 use crate::llama2::quant::*;
-use crate::llama2::tokenizer::*;
 
 // Activations type, placeholder for quantization
 type ATy = f32;
@@ -33,10 +26,10 @@ fn rmsnorm(o: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, weight: QintArrayView1<WTy
     });
 }
 
-fn softmax(mut x: ArrayViewMut1<ATy>) {
+pub fn softmax(x: &mut ArrayViewMut1<ATy>) {
     let max_val = x.iter().fold(ATy::NEG_INFINITY, |a, &b| a.max(b));
     x.map_inplace(|value| *value = (*value - max_val).exp() );
-    x /= x.sum();
+    *x /= x.sum();
 }
 
 fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &QintArray1<WTy>, w: &'a QintArrayView2<'a, WTy>) {
@@ -46,16 +39,16 @@ fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &QintArray1<WTy>, w: &'a QintArra
 }
 
 // sine and cosine tables for RoPE
-fn sin_cos(pos: usize, conf: &Config) -> Vec<(ATy, ATy)> {
-    (0..conf.dim / 2).map(|i| {
-        let head_dim = ((i * 2) % conf.head_size()) as ATy;
-        let pos_freq = (pos as f32) * (1.0 / (10000.0f32).powf(head_dim / conf.head_size() as ATy));
+fn sin_cos(pos: usize, dim: usize, head_size: usize) -> Vec<(ATy, ATy)> {
+    (0..dim / 2).map(|i| {
+        let head_dim = ((i * 2) % head_size) as ATy;
+        let pos_freq = (pos as f32) * (1.0 / (10000.0f32).powf(head_dim / head_size as ATy));
         pos_freq.sin_cos()
     }).collect()
 }
 
 // Implements the inference. In particular see the transformer function.
-pub struct RunState {
+pub struct Transformer {
     x: Array1<ATy>, // activation at current time stamp (dim,)
     xb: Array1<ATy>, // same, but inside a residual branch (dim,)
     xb2: Array1<ATy>, // an additional buffer just for convenience (dim,)
@@ -68,12 +61,15 @@ pub struct RunState {
     logits: Array1<ATy>, // output logits
     key_cache: Array3<ATy>,   // (layer, seq_len, dim)
     value_cache: Array3<ATy>, // (layer, seq_len, dim)
+
+    conf: Config,
+    w: Weights,
 }
 
-impl RunState {
-    pub fn new(config: &Config) -> RunState {
+impl Transformer {
+    pub fn new(config: Config, weights: Weights) -> Transformer {
         let a1_dim = Array1::from_elem(config.dim, ATY_ZERO);
-        RunState {
+        Transformer {
             x: a1_dim.clone(),
             xb: a1_dim.clone(),
             xb2: a1_dim.clone(),
@@ -86,44 +82,46 @@ impl RunState {
             logits: Array1::from_elem(config.vocab_size, ATY_ZERO),
             key_cache: Array3::from_elem((config.n_layers, config.seq_len, config.dim), ATY_ZERO),
             value_cache: Array3::from_elem((config.n_layers, config.seq_len, config.dim), ATY_ZERO),
+            conf: config,
+            w: weights,
         }
     }
 
-    pub fn transformer(&mut self, token: usize, pos: usize, conf: &Config, w: &Weights) {
-        let sin_cos = sin_cos(pos, conf);
+    pub fn forward(&mut self, token: usize, pos: usize) -> ArrayViewMut1<ATy> {
+        let sin_cos = sin_cos(pos, self.conf.dim, self.conf.head_size());
         // copy the token embedding into x
-        self.x.assign(&w.tet.index_axis(Axis(0), token).to_f32().view());
+        self.x.assign(&self.w.tet.index_axis(Axis(0), token).to_f32().view());
 
         // forward all the layers
-        for l in 0..conf.n_layers {
+        for l in 0..self.conf.n_layers {
             // attention rmsnorm
-            rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_att_weight.index_axis(Axis(0), l));
+            rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_att_weight.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
             let xbq = self.xb.view().into();
-            matmul(self.q.view_mut(), &xbq, &w.wq.index_axis(Axis(0), l));
-            matmul(self.k.view_mut(), &xbq, &w.wk.index_axis(Axis(0), l));
-            matmul(self.v.view_mut(), &xbq, &w.wv.index_axis(Axis(0), l));
+            matmul(self.q.view_mut(), &xbq, &self.w.wq.index_axis(Axis(0), l));
+            matmul(self.k.view_mut(), &xbq, &self.w.wk.index_axis(Axis(0), l));
+            matmul(self.v.view_mut(), &xbq, &self.w.wv.index_axis(Axis(0), l));
 
-            self.rope_enc(&sin_cos, conf);
+            self.rope_enc(&sin_cos);
 
             // compute multihead attention
-            self.attention(l, pos, conf);
+            self.attention(l, pos);
 
             // final matmul to get the output of the attention
-            matmul(self.xb2.view_mut(), &self.xb.view().into(), &w.wo.index_axis(Axis(0), l));
+            matmul(self.xb2.view_mut(), &self.xb.view().into(), &self.w.wo.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb2.view();
 
             // ffn rmsnorm
-            rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_ffn_weight.index_axis(Axis(0), l));
+            rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_ffn_weight.index_axis(Axis(0), l));
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
             let xbq = self.xb.view().into();
-            matmul(self.hb.view_mut(), &xbq, &w.w1.index_axis(Axis(0), l));
-            matmul(self.hb2.view_mut(), &xbq, &w.w3.index_axis(Axis(0), l));
+            matmul(self.hb.view_mut(), &xbq, &self.w.w1.index_axis(Axis(0), l));
+            matmul(self.hb2.view_mut(), &xbq, &self.w.w3.index_axis(Axis(0), l));
 
             // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
             self.hb.iter_mut().for_each(|value| {
@@ -133,22 +131,23 @@ impl RunState {
             self.hb *= &self.hb2;
 
             // final matmul
-            matmul(self.xb.view_mut(), &self.hb.view().into(), &w.w2.index_axis(Axis(0), l));
+            matmul(self.xb.view_mut(), &self.hb.view().into(), &self.w.w2.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb;
         }
 
         // Final layer norm
-        rmsnorm(self.xb.view_mut(), self.x.view(), w.rms_final_weight.view());
+        rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_final_weight.view());
 
         // Class logits
-        matmul(self.logits.view_mut(), &self.xb.view().into(), &w.wcls.view());
+        matmul(self.logits.view_mut(), &self.xb.view().into(), &self.w.wcls.view());
+        return self.logits.view_mut();
     }
 
     // Multihead attention calculation, iterates over all heads
-    pub fn attention(&mut self, layer: usize, pos: usize, conf: &Config) {
-        let hs = conf.head_size();
+    pub fn attention(&mut self, layer: usize, pos: usize) {
+        let hs = self.conf.head_size();
         let hs_sqrt = <usize as AsPrimitive<ATy>>::as_(hs).sqrt();
 
         // save key,value at this time step (pos) to our kv cache
@@ -162,7 +161,7 @@ impl RunState {
             index h,
             q in self.q.exact_chunks(hs),
             mut xb in self.xb.exact_chunks_mut(hs),
-            mut att in self.att.exact_chunks_mut(conf.seq_len))
+            mut att in self.att.exact_chunks_mut(self.conf.seq_len))
             {
                 // get the cache vectors for this head at the given timestep
                 let with_cache = |t, cache: &ArrayView2<ATy>, f: &mut dyn FnMut(ArrayView1<ATy>)| {
@@ -180,7 +179,7 @@ impl RunState {
                 }
 
                 // softmax the scores to get attention weights, from 0..pos inclusively
-                softmax(att.slice_mut(s![0..pos+1]));
+                softmax(&mut att.slice_mut(s![0..pos+1]));
                 // weighted sum of the values, store back into xb
                 xb.fill(ATY_ZERO);
 
@@ -193,8 +192,8 @@ impl RunState {
     }
 
     // RoPE relative positional encoding: complex-valued rotate q and k by freq_cis in each head
-    fn rope_enc(&mut self, sin_cos: &Vec<(ATy, ATy)>, conf: &Config) {
-        let kv_dim = (conf.dim * conf.n_kv_heads) / conf.n_heads;
+    fn rope_enc(&mut self, sin_cos: &Vec<(ATy, ATy)>) {
+        let kv_dim = (self.conf.dim * self.conf.n_kv_heads) / self.conf.n_heads;
         let mut vecs = [self.q.view_mut(), self.k.view_mut()];
 
         for (i, &(fci, fcr)) in sin_cos.iter().enumerate() {
@@ -210,62 +209,4 @@ impl RunState {
     }
 }
 
-pub fn sample(probabilities: ArrayView1<ATy>) -> Option<usize> {
-    let r: ATy = rand::thread_rng().gen();
-    let mut cdf = ATY_ZERO;
-    probabilities.iter().enumerate().find(|&(_, &prob)| {
-        cdf += prob;
-        r < cdf
-    }).map(|(i, _)| i)
-}
 
-pub fn argmax(v: ArrayView1<ATy>) -> Option<usize> {
-    v.iter().enumerate()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(index, _)| index)
-}
-
-pub fn gen(model_file: String, temp: f32, steps: usize, prompt: Option<String>) {
-    // Initialize config from file
-    let mut file = File::open(&model_file).expect("Unable to open the checkpoint file");
-    let config = Config::from_file(&mut file).expect("Failed to read the config");
-    println!("Model config: {:?}", config);
-
-    // Finish reading the checkpoint file by loading weights
-    let mut reader = BufReader::new(file);
-    let weights = Weights::read(&config, &mut reader);
-
-    let steps = steps.max(1).min(config.seq_len);
-
-    // Load tokenizer and process prompt
-    let tok = Tokenizer::read("./models/tokenizer.bin", config.vocab_size)
-        .expect("Failed to load tokenizer");
-    let prompt = prompt.unwrap_or_else(|| "".to_string());
-    let prompt_toks = tok.encode(&prompt, true, false);
-
-    let mut state = RunState::new(&config);
-    let start = Instant::now();
-    let mut token = prompt_toks[0];
-    println!("<s>");
-
-    for pos in 0..steps {
-        state.transformer(token, pos, &config, &weights);
-
-        let next = if pos < prompt_toks.len() - 1 {
-            Some(prompt_toks[pos + 1])
-        } else if temp == ATY_ZERO {
-            argmax(state.logits.view())
-        } else {
-            for logits in state.logits.iter_mut() {
-                *logits /= temp;
-            }
-            softmax(state.logits.view_mut());
-            sample(state.logits.view())
-        };
-
-        print!("{}", tok.decode(token, next.unwrap()));
-        io::stdout().flush().unwrap();
-        token = next.unwrap();
-    }
-    println!("\nachieved tok/s: {}", steps as f64 / start.elapsed().as_secs_f64());
-}

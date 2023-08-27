@@ -25,8 +25,7 @@ A list of possible future developments for the project:
 
 * Bucket quantization to improve accuracy.
 * Make quantization optional with a feature flag.
-* Support for prompts.
-* Chat mode.
+* Improved tokenizer.
 * Speed up loading of large models, likely mostly by saving them quantized.
 * Cleaner command-line parsing ([clap](https://docs.rs/clap/latest/clap/))
 * Inference performance and general memory footprint during inference.

@@ -1,11 +1,11 @@
 
-// When single-threaded, blas is fastest but with multithreading in rayon it
-// somehow slows things down at least on small models. May be worth investigating.
-// extern crate blas_src;
-
 mod quant;
+mod sampler;
 mod tokenizer;
 mod model;
-mod llama2c;
+mod transformer;
 
-pub use self::llama2c::gen;
+pub use model::{Config, Weights};
+pub use sampler::Sampler;
+pub use tokenizer::Tokenizer;
+pub use transformer::Transformer;
