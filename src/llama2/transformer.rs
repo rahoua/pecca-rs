@@ -95,7 +95,7 @@ impl Transformer {
         // forward all the layers
         for l in 0..self.conf.n_layers {
             // attention rmsnorm
-            rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_att_weight.index_axis(Axis(0), l));
+            rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_att.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
             let xbq = self.xb.view().into();
@@ -138,7 +138,7 @@ impl Transformer {
         }
 
         // Final layer norm
-        rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_final_weight.view());
+        rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_final.view());
 
         // Class logits
         matmul(self.logits.view_mut(), &self.xb.view().into(), &self.w.wcls.view());

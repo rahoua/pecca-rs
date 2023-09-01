@@ -70,7 +70,7 @@ impl Config {
 // note dim == n_heads * head_size
 pub struct Weights {
     pub tet: QintArray2<WTy>, // (vocab_size, dim) token embeddings table
-    pub rms_att_weight: QintArray2<WTy>, // (n_layers, dim) rmsnorm weights
+    pub rms_att: QintArray2<WTy>, // (n_layers, dim) rmsnorm weights
     pub rms_ffn_weight: QintArray2<WTy>, // (n_layers, dim)
     pub wq: QintArray3<WTy>, // (n_layers, dim, (n_heads * head_size))
     pub wk: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
@@ -79,7 +79,7 @@ pub struct Weights {
     pub w1: QintArray3<WTy>, // (n_layers, hidden_dim, dim)
     pub w2: QintArray3<WTy>, // (n_layers, dim, hidden_dim)
     pub w3: QintArray3<WTy>, // (n_layers, hidden_dim, dim)
-    pub rms_final_weight: QintArray1<WTy>, // (dim)
+    pub rms_final: QintArray1<WTy>, // (dim)
     pub wcls: QintArray2<WTy>, // (dim, vocab_size) optional, classifier weights for logits, on the last layer
 }
 
@@ -123,7 +123,7 @@ impl Weights {
         let tet: QintArray2<WTy> = read_f32(buf, (conf.vocab_size, conf.dim)).view().into();
         Weights {
             tet: tet.clone(),
-            rms_att_weight: read_f32_2(buf, (conf.n_layers, conf.dim)),
+            rms_att: read_f32_2(buf, (conf.n_layers, conf.dim)),
             wq: read_f32_3(buf, (conf.n_layers, conf.dim, conf.dim)),
             wk: read_f32_3(buf, (conf.n_layers, conf.dim, kv_dim)),
             wv: read_f32_3(buf, (conf.n_layers, conf.dim, kv_dim)),
@@ -132,7 +132,7 @@ impl Weights {
             w1: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
             w2: read_f32_3(buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
             w3: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final_weight: read_f32(buf, conf.dim).view().into(),
+            rms_final: read_f32(buf, conf.dim).view().into(),
             wcls: if conf.shared_weights {
                 tet
             } else {
