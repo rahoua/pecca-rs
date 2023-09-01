@@ -71,7 +71,7 @@ impl Config {
 pub struct Weights {
     pub tet: QintArray2<WTy>, // (vocab_size, dim) token embeddings table
     pub rms_att: QintArray2<WTy>, // (n_layers, dim) rmsnorm weights
-    pub rms_ffn_weight: QintArray2<WTy>, // (n_layers, dim)
+    pub rms_ffn: QintArray2<WTy>, // (n_layers, dim)
     pub wq: QintArray3<WTy>, // (n_layers, dim, (n_heads * head_size))
     pub wk: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
     pub wv: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
@@ -105,7 +105,10 @@ where
     S: Into<StrideShape<Ix2>>,
     R: Read,
 {
-    read_f32(buf, shape).view().into()
+    let f32a = read_f32(buf, shape);
+    let qa: QintArray2<i8> = f32a.view().into();
+    println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
+    qa
 }
 
 fn read_f32_3<R, S>(buf: &mut BufReader<R>, shape: S) -> QintArray3<i8>
@@ -113,7 +116,10 @@ where
     S: Into<StrideShape<Ix3>>,
     R: Read,
 {
-    read_f32(buf, shape).view().into()
+    let f32a = read_f32(buf, shape);
+    let qa: QintArray3<i8> = f32a.view().into();
+    println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
+    qa
 }
 
 impl Weights {
@@ -128,7 +134,7 @@ impl Weights {
             wk: read_f32_3(buf, (conf.n_layers, conf.dim, kv_dim)),
             wv: read_f32_3(buf, (conf.n_layers, conf.dim, kv_dim)),
             wo: read_f32_3(buf, (conf.n_layers, conf.dim, conf.dim)),
-            rms_ffn_weight: read_f32_2(buf, (conf.n_layers, conf.dim)),
+            rms_ffn: read_f32_2(buf, (conf.n_layers, conf.dim)),
             w1: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
             w2: read_f32_3(buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
             w3: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),

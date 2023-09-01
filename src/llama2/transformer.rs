@@ -115,7 +115,7 @@ impl Transformer {
             self.x += &self.xb2.view();
 
             // ffn rmsnorm
-            rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_ffn_weight.index_axis(Axis(0), l));
+            rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_ffn.index_axis(Axis(0), l));
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)

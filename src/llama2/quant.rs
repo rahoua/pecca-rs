@@ -42,6 +42,19 @@ pub struct QintArrayView<'a, T, D> where D: Dimension {
     pub arr: ArrayView<'a, T, D>
 }
 
+impl<'a, 'b, T, D> QintArrayView<'a, T, D>
+where
+    D: RemoveAxis,
+    <D as ndarray::Dimension>::Smaller: RemoveAxis
+{
+    pub fn index_axis(&'a self, axis: Axis, index: usize) -> QintArrayView<'b, T, D::Smaller> where 'a: 'b {
+        QintArrayView {
+            scaling: self.scaling.index_axis(axis, index),
+            arr: self.arr.index_axis(axis, index),
+        }
+    }
+}
+
 // A quantized array constructed from an Array1<f32>
 pub type QintArray1<T> = QintArray<T, Ix1>;
 
@@ -54,20 +67,24 @@ impl From<ArrayView1<'_, f32>> for QintArray1<i8> {
 }
 
 impl QintArrayView1<'_, i8> {
-    // almost all execution time is spent here, worth finicking with
-	fn dot_deq(&self, other: &Self) -> f32 {
-		debug_assert_eq!(self.arr.len(), other.arr.len());
-		let len = self.arr.len().min(other.arr.len());
-		let xs = &self.arr.as_slice().unwrap();
-		let ys = &other.arr.as_slice().unwrap();
-		let mut sum = 0;
+    // almost all execution time is spent here, worth finicking over
+    fn dot_deq(&self, other: &Self) -> f32 {
+        debug_assert_eq!(self.arr.len(), other.arr.len());
+        let len = self.arr.len().min(other.arr.len());
+        let xs = &self.arr.as_slice().unwrap();
+        let ys = &other.arr.as_slice().unwrap();
+        let mut sum = 0;
         for n in 0..len {
             sum += xs[n] as i32 * ys[n] as i32;
         }
-		sum as f32 / (self.scaling[[]] * other.scaling[[]])
+        sum as f32 / (self.scaling[[]] * other.scaling[[]])
     }
 
-    pub fn to_f32(self) -> Array1<f32> {
+    pub fn loss(&self, original: &ArrayView1<f32>) -> f32 {
+        loss(&self.to_f32().view(), original)
+    }
+
+    pub fn to_f32(&self) -> Array1<f32> {
         dequant_i8(self)
     }
 }
@@ -112,9 +129,23 @@ impl<'a, 'b> QintArrayView2<'a, i8> {
         });
         res
     }
+
+    pub fn loss(&'a self, original: &ArrayView2<f32>) -> f32 {
+        let mut total_loss = 0.0;
+        let sz = self.arr.shape()[0];
+        for n in 0..sz {
+            let q = self.index_axis(Axis(0), n);
+            let o = original.index_axis(Axis(0), n);
+            total_loss += q.loss(&o)
+        }
+        total_loss // sz as f32
+    }
+
 }
 
 pub type QintArray3<T> = QintArray<T, Ix3>;
+
+pub type QintArrayView3<'a, T> = QintArrayView<'a, T, Ix3>;
 
 impl From<ArrayView3<'_, f32>> for QintArray3<i8> {
     fn from(fpa: ArrayView3<f32>) -> Self {
@@ -136,6 +167,20 @@ impl From<ArrayView3<'_, f32>> for QintArray3<i8> {
     }
 }
 
+impl<'a, 'b> QintArrayView3<'a, i8> {
+    pub fn loss(&'a self, original: &ArrayView3<f32>) -> f32 {
+        let mut total_loss = 0.0;
+        let sz = self.arr.shape()[0];
+        for n in 0..sz {
+            let q = self.index_axis(Axis(0), n);
+            let o = original.index_axis(Axis(0), n);
+            total_loss += q.loss(&o)
+        }
+        total_loss // sz as f32
+    }
+
+}
+
 fn quant_i8(fpa: ArrayView1<f32>) -> QintArray1<i8> {
     let (min, max) = fpa.iter().fold((f32::MAX, f32::MIN), |(min, max), &x| (min.min(x), max.max(x)));
     let scaling = i8::MAX as f32 / max.abs().max(min.abs());
@@ -145,11 +190,11 @@ fn quant_i8(fpa: ArrayView1<f32>) -> QintArray1<i8> {
     }
 }
 
-fn dequant_i8(ia: QintArrayView1<i8>) -> Array1<f32> {
+fn dequant_i8(ia: &QintArrayView1<i8>) -> Array1<f32> {
     ia.arr.mapv(|n| n as f32 / ia.scaling[[]])
 }
 
-fn loss(fp1: ArrayView1<f32>, fp2: ArrayView1<f32>) -> f32 {
+fn loss(fp1: &ArrayView1<f32>, fp2: &ArrayView1<f32>) -> f32 {
     std::iter::zip(fp1, fp2).map(|(x1, x2)| x1 - x2).sum::<f32>() / fp1.len() as f32
 }
 
