@@ -98,10 +98,11 @@ impl Transformer {
             rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_att.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
-            let xbq = self.xb.view().into();
+            let xbq = QintArray1::quantize(STRIDE, self.xb.view());
             matmul(self.q.view_mut(), &xbq, &self.w.wq.index_axis(Axis(0), l));
             matmul(self.k.view_mut(), &xbq, &self.w.wk.index_axis(Axis(0), l));
             matmul(self.v.view_mut(), &xbq, &self.w.wv.index_axis(Axis(0), l));
+            // println!("{} v: {:?}", l, self.v.slice(s![0..10]).as_slice().unwrap());
 
             self.rope_enc(&sin_cos);
 
@@ -109,7 +110,8 @@ impl Transformer {
             self.attention(l, pos);
 
             // final matmul to get the output of the attention
-            matmul(self.xb2.view_mut(), &self.xb.view().into(), &self.w.wo.index_axis(Axis(0), l));
+            matmul(self.xb2.view_mut(), &QintArray1::quantize(STRIDE, self.xb.view()), &self.w.wo.index_axis(Axis(0), l));
+            // println!("{} xb2: {:?}", l, self.xb2.slice(s![0..10]).as_slice().unwrap());
 
             // residual connection back into x
             self.x += &self.xb2.view();
@@ -119,9 +121,10 @@ impl Transformer {
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
-            let xbq = self.xb.view().into();
+            let xbq = QintArray1::quantize(STRIDE, self.xb.view());
             matmul(self.hb.view_mut(), &xbq, &self.w.w1.index_axis(Axis(0), l));
             matmul(self.hb2.view_mut(), &xbq, &self.w.w3.index_axis(Axis(0), l));
+            // println!("{} hb2: {:?}", l, self.hb2.slice(s![0..10]).as_slice().unwrap());
 
             // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
             self.hb.iter_mut().for_each(|value| {
@@ -131,17 +134,19 @@ impl Transformer {
             self.hb *= &self.hb2;
 
             // final matmul
-            matmul(self.xb.view_mut(), &self.hb.view().into(), &self.w.w2.index_axis(Axis(0), l));
+            matmul(self.xb.view_mut(), &QintArray1::quantize(STRIDE, self.hb.view()), &self.w.w2.index_axis(Axis(0), l));
+            // println!("{} xb: {:?}", l, self.xb.slice(s![0..10]).as_slice().unwrap());
 
             // residual connection back into x
             self.x += &self.xb;
         }
+        // println!("fx: {:?}", self.x.slice(s![0..10]).as_slice().unwrap());
 
         // Final layer norm
         rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_final.view());
 
         // Class logits
-        matmul(self.logits.view_mut(), &self.xb.view().into(), &self.w.wcls.view());
+        matmul(self.logits.view_mut(), &QintArray1::quantize(STRIDE, self.xb.view()), &self.w.wcls.view());
         return self.logits.view_mut();
     }
 

@@ -13,6 +13,8 @@ use crate::llama2::quant::*;
 // Weights type, placeholder for quantization
 pub type WTy = i8;
 
+pub const STRIDE: usize = 64;
+
 // The original format has 7 serialized fields of 4 bytes each
 const CONFIG_SIZE: usize = 7*4;
 
@@ -93,7 +95,7 @@ where
     let shape = shape.into();
     let mut ws = Vec::with_capacity(shape.size());
     let mut reader = buf.take((shape.size() * 4) as u64);
-    println!("Reading and quantizing {} weights", shape.size());
+    println!("Reading and quantizing {} weights in a {:?} matrix", shape.size(), shape.raw_dim());
     while let Ok(val) = reader.read_f32::<LittleEndian>() {
         ws.push(val.as_());
     }
@@ -106,7 +108,7 @@ where
     R: Read,
 {
     let f32a = read_f32(buf, shape);
-    let qa: QintArray2<i8> = f32a.view().into();
+    let qa = QintArray2::quantize(STRIDE, f32a.view());
     println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
     qa
 }
@@ -117,7 +119,7 @@ where
     R: Read,
 {
     let f32a = read_f32(buf, shape);
-    let qa: QintArray3<i8> = f32a.view().into();
+    let qa = QintArray3::quantize(STRIDE, f32a.view());
     println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
     qa
 }
@@ -126,7 +128,7 @@ impl Weights {
 
     pub fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
         let kv_dim = conf.n_kv_heads * conf.head_size();
-        let tet: QintArray2<WTy> = read_f32(buf, (conf.vocab_size, conf.dim)).view().into();
+        let tet = QintArray2::quantize(STRIDE, read_f32(buf, (conf.vocab_size, conf.dim)).view());
         Weights {
             tet: tet.clone(),
             rms_att: read_f32_2(buf, (conf.n_layers, conf.dim)),
@@ -138,7 +140,7 @@ impl Weights {
             w1: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
             w2: read_f32_3(buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
             w3: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final: read_f32(buf, conf.dim).view().into(),
+            rms_final: QintArray1::quantize(STRIDE, read_f32(buf, conf.dim).view()),
             wcls: if conf.shared_weights {
                 tet
             } else {
