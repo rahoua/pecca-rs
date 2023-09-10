@@ -129,7 +129,7 @@ impl Weights {
     pub fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
         let kv_dim = conf.n_kv_heads * conf.head_size();
         let tet = QintArray2::quantize(STRIDE, read_f32(buf, (conf.vocab_size, conf.dim)).view());
-        Weights {
+        let mut w = Weights {
             tet: tet.clone(),
             rms_att: read_f32_2(buf, (conf.n_layers, conf.dim)),
             wq: read_f32_3(buf, (conf.n_layers, conf.dim, conf.dim)),
@@ -141,11 +141,15 @@ impl Weights {
             w2: read_f32_3(buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
             w3: read_f32_3(buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
             rms_final: QintArray1::quantize(STRIDE, read_f32(buf, conf.dim).view()),
-            wcls: if conf.shared_weights {
-                tet
-            } else {
-                read_f32_2(buf, (conf.vocab_size, conf.dim))
-            },
+            wcls:  tet,
+        };
+        if !conf.shared_weights {
+            // skip the old 2 freq_cis_real and freq_cis imag (used to be for RoPE)
+            read_f32(buf, (conf.seq_len, conf.head_size()/2));
+            read_f32(buf, (conf.seq_len, conf.head_size()/2));
+
+            w.wcls = read_f32_2(buf, (conf.vocab_size, conf.dim));
         }
+        w
     }
 }
