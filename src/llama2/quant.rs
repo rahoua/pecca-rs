@@ -78,19 +78,20 @@ impl QintArrayView1<'_, i8> {
         debug_assert_eq!(self.scaling.len(), other.scaling.len());
 
         let len = self.arr.len().min(other.arr.len());
+        let s_len = len / self.stride;
+
         let xs = &self.arr.as_slice().unwrap();
         let ys = &other.arr.as_slice().unwrap();
 
         let mut sum = 0.0;
         let mut stride_sum = 0;
-        for n in 0..len {
-            stride_sum += xs[n] as i32 * ys[n] as i32;
-
-            if (n + 1) % self.stride == 0 {
-                let si = (n + 1) / self.stride - 1;
-                sum += stride_sum as f32 / (self.scaling[[si]] * other.scaling[[si]]);
-                stride_sum = 0;
+        for s in 0..s_len {
+            let cur_stride = s * self.stride;
+            for n in cur_stride..(cur_stride + self.stride) {
+                stride_sum += xs[n] as i32 * ys[n] as i32;
             }
+            sum += stride_sum as f32 / (self.scaling[[s]] * other.scaling[[s]]);
+            stride_sum = 0;
         }
         sum
     }
