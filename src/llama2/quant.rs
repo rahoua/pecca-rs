@@ -207,7 +207,7 @@ fn quant_i8(stride: usize, fpa: ArrayView1<f32>) -> QintArray1<i8> {
     let mut qarr = Array1::zeros(fpa.dim());
     let mut scaling = Array1::zeros(fpa.dim() / stride);
 
-    azip!((
+    par_azip!((
         bucket in fpa.exact_chunks(stride),
         qbuck in qarr.exact_chunks_mut(stride),
         scale in scaling.view_mut(),
