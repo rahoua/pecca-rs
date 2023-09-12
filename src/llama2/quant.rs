@@ -77,22 +77,19 @@ impl QintArrayView1<'_, i8> {
         debug_assert_eq!(self.arr.len(), other.arr.len());
         debug_assert_eq!(self.scaling.len(), other.scaling.len());
 
-        let len = self.arr.len().min(other.arr.len());
-        let s_len = len / self.stride;
-
-        let xs = &self.arr.as_slice().unwrap();
-        let ys = &other.arr.as_slice().unwrap();
-
         let mut sum = 0.0;
-        let mut stride_sum = 0;
-        for s in 0..s_len {
-            let cur_stride = s * self.stride;
-            for n in cur_stride..(cur_stride + self.stride) {
-                stride_sum += xs[n] as i32 * ys[n] as i32;
-            }
-            sum += stride_sum as f32 / (self.scaling[[s]] * other.scaling[[s]]);
-            stride_sum = 0;
-        }
+        azip!((
+            x in self.arr.exact_chunks(self.stride),
+            y in other.arr.exact_chunks(other.stride),
+            sx in self.scaling,
+            sy in other.scaling,
+        ) {
+            let mut stride_sum = 0;
+            azip!((xi in x, yi in y) {
+                stride_sum += *xi as i32 * *yi as i32;
+            });
+            sum += stride_sum as f32 / (sx * sy);
+        });
         sum
     }
 
