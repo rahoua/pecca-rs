@@ -25,7 +25,18 @@ Pecca can be run similarly with larger tiny stories models (like the 110M one) o
 pecca-rs --help
 ```
 
-## Direction
+To get the llama2 models, follow the [instructions](https://github.com/karpathy/llama2.c#metas-llama-2-models) for llama2.c. Pecca supports the same model format. As Pecca does not use memmap, loading and quantizing the model on the fly can take some time. To speed things up, the models can also be saved quantized using the `--write-model` command line switch.
+
+## Performance
+
+At the moment there's no formal benchmark, we just provide rough estimates to give a ballpark of overall performance.
+
+Llama2 model on a Macbook Pro M2 Max:
+* llama2.c: 4 tok/s
+* llama.cpp, Q4KM quantization: 24 tok/s
+* pecca, i8 quantization: 11 tok/s
+
+## Future Directions
 
 A list of possible future developments for the project:
 
@@ -33,7 +44,6 @@ A list of possible future developments for the project:
 * Evaluation mode that runs both quantized and f32 inference at the same time to quantify quantization error.
 * Improved tokenizer.
 * Special mode for llama2 code (slight differences with other llama2s).
-* Speed up loading of large models, likely mostly by saving them quantized.
 * Inference performance and general memory footprint during inference.
 * Experiment with [SmoothQuant](https://arxiv.org/abs/2211.10438)
 * Explore extending ndarray `dot` operation to support cublas or Metal.

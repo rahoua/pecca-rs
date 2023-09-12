@@ -34,6 +34,8 @@ struct Args {
     prompt: Option<String>,
     #[arg(short, long)]
     system_prompt: Option<String>,
+
+    /// Write the quantized model to a file, much faster to load on subsequent runs
     #[arg(short, long)]
     write_model: Option<String>,
 }
