@@ -98,7 +98,7 @@ impl Transformer {
             rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_att.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
-            let xbq = QintArray1::quantize(STRIDE, self.xb.view());
+            let xbq = self.q1(self.xb.view());
             matmul(self.q.view_mut(), &xbq, &self.w.wq.index_axis(Axis(0), l));
             matmul(self.k.view_mut(), &xbq, &self.w.wk.index_axis(Axis(0), l));
             matmul(self.v.view_mut(), &xbq, &self.w.wv.index_axis(Axis(0), l));
@@ -109,7 +109,8 @@ impl Transformer {
             self.attention(l, pos);
 
             // final matmul to get the output of the attention
-            matmul(self.xb2.view_mut(), &QintArray1::quantize(STRIDE, self.xb.view()), &self.w.wo.index_axis(Axis(0), l));
+            let xbq = self.q1(self.xb.view());
+            matmul(self.xb2.view_mut(), &xbq, &self.w.wo.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb2.view();
@@ -119,7 +120,7 @@ impl Transformer {
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
-            let xbq = QintArray1::quantize(STRIDE, self.xb.view());
+            let xbq = self.q1(self.xb.view());
             matmul(self.hb.view_mut(), &xbq, &self.w.w1.index_axis(Axis(0), l));
             matmul(self.hb2.view_mut(), &xbq, &self.w.w3.index_axis(Axis(0), l));
 
@@ -131,7 +132,8 @@ impl Transformer {
             self.hb *= &self.hb2;
 
             // final matmul
-            matmul(self.xb.view_mut(), &QintArray1::quantize(STRIDE, self.hb.view()), &self.w.w2.index_axis(Axis(0), l));
+            let hbq = self.q1(self.hb.view());
+            matmul(self.xb.view_mut(), &hbq, &self.w.w2.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb;
@@ -141,7 +143,9 @@ impl Transformer {
         rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_final.view());
 
         // Class logits
-        matmul(self.logits.view_mut(), &QintArray1::quantize(STRIDE, self.xb.view()), &self.w.wcls.view());
+        let xbq = self.q1(self.xb.view());
+        matmul(self.logits.view_mut(), &xbq, &self.w.wcls.view());
+
         return self.logits.view_mut();
     }
 
@@ -207,6 +211,10 @@ impl Transformer {
             }
         }
     }
+
+    // Simple quantization helper to reduce verbosity
+    fn q1(&self, w: ArrayView1<ATy>) -> QintArray1<WTy> {
+        QintArray1::quantize(self.conf.q_stride, w.view())
+    }
+
 }
-
-

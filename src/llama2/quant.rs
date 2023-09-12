@@ -212,15 +212,15 @@ fn quant_i8(stride: usize, fpa: ArrayView1<f32>) -> QintArray1<i8> {
 
     azip!((
         bucket in fpa.exact_chunks(stride),
-        mut qbuck in qarr.exact_chunks_mut(stride),
-        mut scale in scaling.view_mut(),
+        qbuck in qarr.exact_chunks_mut(stride),
+        scale in scaling.view_mut(),
     ) {
         let (min, max) = bucket.iter()
             .fold((f32::MAX, f32::MIN), |(min, max), &x| (min.min(x), max.max(x)));
         *scale = i8::MAX as f32 / max.abs().max(min.abs());
         azip!((
             b in bucket,
-            mut qb in qbuck,
+            qb in qbuck,
         ) {
             *qb = (*b * *scale).round() as i8;
         });
@@ -238,11 +238,11 @@ fn dequant_i8(ia: &QintArrayView1<i8>) -> Array1<f32> {
     azip!((
         qbuck in ia.arr.exact_chunks(ia.stride),
         scale in ia.scaling.view(),
-        mut buck in arr.exact_chunks_mut(ia.stride),
+        buck in arr.exact_chunks_mut(ia.stride),
     ) {
         azip!((
             qb in qbuck,
-            mut b in buck,
+            b in buck,
         ) {
             *b = *qb as f32 / scale;
         });

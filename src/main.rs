@@ -2,7 +2,7 @@
 mod llama2;
 
 use std::fs::File;
-use std::io::{self, Write, BufReader};
+use std::io::{self, Write, BufReader, BufWriter};
 use std::time::Instant;
 
 use clap::{Parser, ValueEnum};
@@ -13,6 +13,10 @@ use llama2::*;
 //   * SmoothQuant - https://arxiv.org/pdf/2211.10438.pdf
 //   * AWQ - https://arxiv.org/pdf/2306.00978.pdf
 //   * The case for 4 bit precision - https://arxiv.org/pdf/2212.09720.pdf
+
+
+#[macro_use]
+extern crate num_derive;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -30,6 +34,8 @@ struct Args {
     prompt: Option<String>,
     #[arg(short, long)]
     system_prompt: Option<String>,
+    #[arg(short, long)]
+    write_model: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -44,13 +50,28 @@ fn main() {
     // Initialize config from file
     let mut file = File::open(&args.model_file)
         .expect("Unable to open the checkpoint file");
-    let config = Config::from_file(&mut file)
+    let mut config = Config::from_file(&mut file)
         .expect("Failed to read the config");
     println!("Model config: {:?}", config);
 
-    // Finish reading the checkpoint file by loading weights
-    let mut reader = BufReader::new(file);
+    // Finish reading the checkpoint file by loading weights, at the moment we
+    // quantize on the fly
+    config.q_type = QuantizationType::LinearI8;
+    config.q_stride = DEFAULT_STRIDE;
+    let start = Instant::now();
+    let mut reader = BufReader::with_capacity(1000*1000, file);
     let weights = Weights::read(&config, &mut reader);
+    println!("Read model weights in {:.2}s.", start.elapsed().as_secs_f64());
+
+    if args.write_model.is_some() {
+        println!("Writing model to {}", args.write_model.as_ref().unwrap());
+        let mut writer = File::create(args.write_model.unwrap())
+            .expect("Unable to create the output file");
+        let mut buf_writer = BufWriter::new(&mut writer);
+        config.write(&mut buf_writer).expect("Failed to write the config");
+        weights.write(&mut buf_writer).expect("Failed to write the weights");
+        println!("Done");
+    }
 
     let steps = args.steps.max(1).min(config.seq_len);
 
