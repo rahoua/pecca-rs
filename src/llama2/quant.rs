@@ -24,6 +24,12 @@ impl<T, D> QintArray<T, D> where D: Dimension {
     }
 }
 
+impl<D> QintArray<i8, D> where D: Dimension {
+    pub fn quantize(stride: usize, fpa: ArrayView<f32, D>) -> Self {
+        quant_i8(stride, fpa)
+    }
+}
+
 impl<T, D> QintArray<T, D>
 where
     D: RemoveAxis,
@@ -64,12 +70,6 @@ pub type QintArray1<T> = QintArray<T, Ix1>;
 
 pub type QintArrayView1<'a, T> = QintArrayView<'a, T, Ix1>;
 
-impl QintArray1<i8> {
-    pub fn quantize(stride: usize, fpa: ArrayView1<f32>) -> Self {
-        quant_i8(stride, fpa)
-    }
-}
-
 impl QintArrayView1<'_, i8> {
     // almost all execution time is spent here, worth finicking over
     fn dot_deq(&self, other: &Self) -> f32 {
@@ -106,29 +106,6 @@ pub type QintArray2<T> = QintArray<T, Ix2>;
 
 pub type QintArrayView2<'a, T> = QintArrayView<'a, T, Ix2>;
 
-impl QintArray2<i8> {
-    pub fn quantize(stride: usize, fpa: ArrayView2<f32>) -> Self {
-        assert!(fpa.dim().1 % stride == 0);
-
-        let mut qarr = Array2::zeros(fpa.dim());
-        let mut scaling = Array2::zeros((fpa.dim().0, fpa.dim().1 / stride));
-        azip!((
-            row in fpa.outer_iter(),
-            qrow in qarr.outer_iter_mut(),
-            srow in scaling.outer_iter_mut(),
-        ) {
-            let qarr1 = QintArray1::quantize(stride, row);
-            qarr1.arr.move_into(qrow);
-            qarr1.scaling.move_into(srow);
-        });
-        QintArray2 {
-            stride: stride,
-            arr: qarr,
-            scaling: scaling,
-        }
-    }
-}
-
 impl<'a, 'b> QintArrayView2<'a, i8> {
     pub fn dot(&'a self, x: QintArrayView1<'b, i8>) -> Array1<f32> where 'a: 'b {
         let mut res = Array1::zeros(self.arr.shape()[0]);
@@ -164,29 +141,6 @@ pub type QintArray3<T> = QintArray<T, Ix3>;
 
 pub type QintArrayView3<'a, T> = QintArrayView<'a, T, Ix3>;
 
-impl QintArray3<i8> {
-    pub fn quantize(stride: usize, fpa: ArrayView3<f32>) -> Self {
-        assert!(fpa.dim().2 % stride == 0);
-
-        let mut qarr = Array3::zeros(fpa.dim());
-        let mut scaling = Array3::zeros((fpa.dim().0, fpa.dim().1, fpa.dim().2 / stride));
-        azip!((
-            row in fpa.outer_iter(),
-            qrow in qarr.outer_iter_mut(),
-            srow in scaling.outer_iter_mut(),
-        ) {
-            let qarr2 = QintArray2::quantize(stride, row);
-            qarr2.arr.move_into(qrow);
-            qarr2.scaling.move_into(srow);
-        });
-        QintArray3 {
-            stride: stride,
-            arr: qarr,
-            scaling: scaling,
-        }
-    }
-}
-
 impl<'a, 'b> QintArrayView3<'a, i8> {
     pub fn loss(&'a self, original: &ArrayView3<f32>) -> f32 {
         let mut total_loss = 0.0;
@@ -201,32 +155,28 @@ impl<'a, 'b> QintArrayView3<'a, i8> {
 
 }
 
-fn quant_i8(stride: usize, fpa: ArrayView1<f32>) -> QintArray1<i8> {
-    assert!(fpa.dim() % stride == 0);
+fn quant_i8<D>(stride: usize, fpa: ArrayView<f32, D>) -> QintArray<i8, D> where D: Dimension {
+    assert!(fpa.len() % stride == 0);
 
-    let mut qarr = Array1::zeros(fpa.dim());
-    let mut scaling = Array1::zeros(fpa.dim() / stride);
+    let mut qdata = Vec::with_capacity(fpa.len());
+    let mut scaling = Vec::with_capacity(fpa.len() / stride);
 
-    par_azip!((
-        bucket in fpa.exact_chunks(stride),
-        qbuck in qarr.exact_chunks_mut(stride),
-        scale in scaling.view_mut(),
-    ) {
+    for bucket in fpa.as_slice().unwrap().chunks(stride) {
         let (min, max) = bucket.iter()
             .fold((f32::MAX, f32::MIN), |(min, max), &x| (min.min(x), max.max(x)));
-        *scale = i8::MAX as f32 / max.abs().max(min.abs());
-        azip!((
-            b in bucket,
-            qb in qbuck,
-        ) {
-            *qb = (*b * *scale).round() as i8;
-        });
-    });
-
-    QintArray1 {
+        let scale = i8::MAX as f32 / max.abs().max(min.abs());
+        scaling.push(scale);
+        for b in bucket {
+            qdata.push((b * scale).round() as i8);
+        }
+    }
+    let mut scaling_shape = fpa.raw_dim();
+    let last_dim = scaling_shape.ndim() - 1;
+    scaling_shape[last_dim] /= stride;
+    QintArray {
         stride,
-        scaling,
-        arr: qarr,
+        scaling: Array::from_shape_vec(scaling_shape, scaling).unwrap(),
+        arr: Array::from_shape_vec(fpa.raw_dim(), qdata).unwrap(),
     }
 }
 

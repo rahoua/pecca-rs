@@ -143,25 +143,37 @@ pub struct Weights {
     pub wcls: QintArray2<WTy>, // (dim, vocab_size) optional, classifier weights for logits, on the last layer
 }
 
-fn read_f32_2<R, S>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray2<i8>
+fn read_i8<R, S, D>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray<i8, D>
 where
-    S: Into<StrideShape<Ix2>>,
     R: Read,
+    S: Into<StrideShape<D>>,
+    D: Dimension,
 {
-    let f32a = read_array(buf, shape);
-    let qa = QintArray2::quantize(conf.q_stride, f32a.view());
-    println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
-    qa
+    let shape = shape.into();
+    let ndim = shape.raw_dim().ndim();
+    let mut scaling_shape = shape.raw_dim().clone();
+    scaling_shape[ndim-1] = scaling_shape[ndim-1] / conf.q_stride;
+
+    let scaling = read_array(buf, scaling_shape);
+    println!("Reading {} i8 quantized weights", shape.size());
+    let arr = read_array(buf, shape);
+
+    QintArray {
+        stride: conf.q_stride,
+        scaling,
+        arr,
+    }
 }
 
-fn read_f32_3<R, S>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray3<i8>
+fn read_f32_qi8<R, S, D>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray<i8, D>
 where
-    S: Into<StrideShape<Ix3>>,
     R: Read,
+    S: Into<StrideShape<D>>,
+    D: Dimension,
 {
     let f32a = read_array(buf, shape);
-    let qa = QintArray3::quantize(conf.q_stride, f32a.view());
-    println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
+    let qa = QintArray::quantize(conf.q_stride, f32a.view());
+    // println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
     qa
 }
 
@@ -178,19 +190,19 @@ impl Weights {
     }
     fn read_llama2c<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
         let kv_dim = conf.n_kv_heads * conf.head_size();
-        let tet = read_f32_2(conf, buf, (conf.vocab_size, conf.dim));
+        let tet = read_f32_qi8(conf, buf, (conf.vocab_size, conf.dim));
         let mut w = Weights {
             tet: tet.clone(),
-            rms_att: read_f32_2(conf, buf, (conf.n_layers, conf.dim)),
-            wq: read_f32_3(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            wk: read_f32_3(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wv: read_f32_3(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wo: read_f32_3(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            rms_ffn: read_f32_2(conf, buf, (conf.n_layers, conf.dim)),
-            w1: read_f32_3(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            w2: read_f32_3(conf, buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
-            w3: read_f32_3(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final: QintArray1::quantize(conf.q_stride, read_array(buf, conf.dim).view()),
+            rms_att: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim)),
+            wq: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
+            wk: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
+            wv: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
+            wo: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
+            rms_ffn: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim)),
+            w1: read_f32_qi8(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
+            w2: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
+            w3: read_f32_qi8(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
+            rms_final: read_f32_qi8(conf, buf, conf.dim),
             wcls:  tet,
         };
         if !conf.shared_weights {
@@ -198,7 +210,7 @@ impl Weights {
             read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
             read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
 
-            w.wcls = read_f32_2(conf, buf, (conf.vocab_size, conf.dim));
+            w.wcls = read_f32_qi8(conf, buf, (conf.vocab_size, conf.dim));
         }
         w
     }
@@ -250,28 +262,6 @@ where
         buf.write_i8(val.as_())?;
     }
     Ok(())
-}
-
-fn read_i8<R, S, D>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray<i8, D>
-where
-    R: Read,
-    S: Into<StrideShape<D>>,
-    D: Dimension,
-{
-    let shape = shape.into();
-    let ndim = shape.raw_dim().ndim();
-    let mut scaling_shape = shape.raw_dim().clone();
-    scaling_shape[ndim-1] = scaling_shape[ndim-1] / conf.q_stride;
-
-    let scaling = read_array(buf, scaling_shape);
-    println!("Reading {} i8 quantized weights", shape.size());
-    let arr = read_array(buf, shape);
-
-    QintArray {
-        stride: conf.q_stride,
-        scaling,
-        arr,
-    }
 }
 
 fn read_array<R, T, D, S>(buf: &mut R, shape: S) -> Array<T, D>
