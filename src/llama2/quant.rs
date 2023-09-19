@@ -160,6 +160,15 @@ impl<'a, 'b> QintArrayView3<'a, i8> {
 
 }
 
+// Calculate the dimension of the scaling factors for a given original dimension
+// and stride.
+pub fn scaling_dim<D>(dim: &D, stride: usize) -> D where D: Dimension {
+    let mut scaling_dim = dim.clone();
+    let last_dim = scaling_dim.ndim() - 1;
+    scaling_dim[last_dim] /= stride;
+    scaling_dim
+}
+
 fn quant_i8<D>(stride: usize, fpa: ArrayView<f32, D>) -> QintArray<i8, D> where D: Dimension {
     assert!(fpa.len() % stride == 0);
 
@@ -175,12 +184,9 @@ fn quant_i8<D>(stride: usize, fpa: ArrayView<f32, D>) -> QintArray<i8, D> where 
             qdata.push((b * scale).round() as i8);
         }
     }
-    let mut scaling_shape = fpa.raw_dim();
-    let last_dim = scaling_shape.ndim() - 1;
-    scaling_shape[last_dim] /= stride;
     QintArray {
         stride,
-        scaling: Array::from_shape_vec(scaling_shape, scaling).unwrap(),
+        scaling: Array::from_shape_vec(scaling_dim(&fpa.raw_dim(), stride), scaling).unwrap(),
         arr: Array::from_shape_vec(fpa.raw_dim(), qdata).unwrap(),
     }
 }

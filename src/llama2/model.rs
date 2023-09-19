@@ -11,9 +11,6 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::llama2::quant::*;
 
-// Weights type, placeholder for quantization
-pub type WTy = i8;
-
 pub const DEFAULT_STRIDE: usize = 64;
 
 // The original format has 7 serialized fields of 4 bytes each
@@ -50,24 +47,18 @@ impl<D> Tensor<D> where D: Dimension {
         R: Read,
         S: Into<StrideShape<D>>,
     {
-        if conf.q_type == QuantizationType::None {
+        if conf.q_type != QuantizationType::None {
             let f32a = read_array(buf, shape);
             // TODO command line switch to optionally quantize
             let qa = QintArray::quantize(conf.q_stride, f32a.view());
             Tensor::Qi8(qa)
+            // Tensor::F32(f32a)
         } else {
             let shape = shape.into();
-            let ndim = shape.raw_dim().ndim();
-            let mut scaling_shape = shape.raw_dim().clone();
-            scaling_shape[ndim-1] = scaling_shape[ndim-1] / conf.q_stride;
-
-            let scaling = read_array(buf, scaling_shape);
-            let arr = read_array(buf, shape);
-
             Tensor::Qi8(QintArray {
                 stride: conf.q_stride,
-                scaling,
-                arr,
+                scaling: read_array(buf, scaling_dim(shape.raw_dim(), conf.q_stride)),
+                arr: read_array(buf, shape),
             })
         }
     }
@@ -248,7 +239,7 @@ pub struct Weights {
 
 impl Weights {
 
-    fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
+    pub fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
         let kv_dim = conf.n_kv_heads * conf.head_size();
         let tet = Tensor::read(conf, buf, (conf.vocab_size, conf.dim));
         let mut w = Weights {
