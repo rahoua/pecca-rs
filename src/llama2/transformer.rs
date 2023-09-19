@@ -14,7 +14,7 @@ const ATY_ONE: ATy = 1.0;
 
 // Generic vector and matrix functions used for inference
 
-fn rmsnorm(o: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, weight: QintArrayView1<WTy>) {
+fn rmsnorm(o: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, weight: TensorView1) {
     // calculate sum of squares
     let xlen: ATy = x.len().as_();
     let low_val: ATy = 1e-5.as_();
@@ -32,8 +32,8 @@ pub fn softmax(x: &mut ArrayViewMut1<ATy>) {
     *x /= x.sum();
 }
 
-fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &QintArray1<WTy>, w: &'a QintArrayView2<'a, WTy>) {
-    debug_assert_eq!(w.arr.shape(), &[xout.len(), x.len()]);
+fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &'a Tensor1, w: &'a TensorView2<'a>) {
+    debug_assert_eq!(w.shape(), &[xout.len(), x.len()]);
 
     xout.assign(&w.dot(x.view()));
 }
@@ -213,8 +213,8 @@ impl Transformer {
     }
 
     // Simple quantization helper to reduce verbosity
-    fn q1(&self, w: ArrayView1<ATy>) -> QintArray1<WTy> {
-        QintArray1::quantize(self.conf.q_stride, w.view())
+    fn q1(&self, w: ArrayView1<ATy>) -> Tensor1 {
+        Tensor::Qi8(QintArray1::quantize(self.conf.q_stride, w.view()))
     }
 
 }

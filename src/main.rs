@@ -54,7 +54,7 @@ fn main() {
         .expect("Unable to open the checkpoint file");
     let mut config = Config::from_file(&mut file)
         .expect("Failed to read the config");
-    println!("Model config: {:?}", config);
+    println!("Reading model waits, takes a little while...");
 
     // Finish reading the checkpoint file by loading weights, at the moment we
     // quantize on the fly

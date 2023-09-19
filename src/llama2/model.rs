@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, Read, BufReader, BufRead, Write};
 
 use ndarray::prelude::*;
-use ndarray::StrideShape;
+use ndarray::{StrideShape, RemoveAxis};
 
 use byteorder::{WriteBytesExt, LittleEndian, ByteOrder};
 use num_traits::cast::AsPrimitive;
@@ -32,6 +32,111 @@ pub enum Version {
     Llama2C = 0,
     #[default]
     V1 = 1,
+}
+
+#[derive(Debug, Clone)]
+pub enum Tensor<D: Dimension> {
+    Qi8(QintArray<i8, D>),
+    F32(Array<f32, D>),
+}
+
+pub type Tensor1 = Tensor<Ix1>;
+pub type Tensor2 = Tensor<Ix2>;
+pub type Tensor3 = Tensor<Ix3>;
+
+impl<D> Tensor<D> where D: Dimension {
+    fn read<R, S>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> Tensor<D>
+    where
+        R: Read,
+        S: Into<StrideShape<D>>,
+    {
+        if conf.q_type != QuantizationType::None {
+            let f32a = read_array(buf, shape);
+            // TODO command line switch to optionally quantize
+            let qa = QintArray::quantize(conf.q_stride, f32a.view());
+            Tensor::Qi8(qa)
+        } else {
+            let shape = shape.into();
+            let ndim = shape.raw_dim().ndim();
+            let mut scaling_shape = shape.raw_dim().clone();
+            scaling_shape[ndim-1] = scaling_shape[ndim-1] / conf.q_stride;
+
+            let scaling = read_array(buf, scaling_shape);
+            let arr = read_array(buf, shape);
+
+            Tensor::Qi8(QintArray {
+                stride: conf.q_stride,
+                scaling,
+                arr,
+            })
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Tensor::Qi8(a) => a.len(),
+            Tensor::F32(a) => a.len(),
+        }
+    }
+
+    pub fn view(&self) -> TensorView<'_, D> {
+        match self {
+            Tensor::Qi8(a) => TensorView::Qi8(a.view()),
+            Tensor::F32(a) => TensorView::F32(a.view()),
+        }
+    }
+}
+
+impl<D> Tensor<D> where D: Dimension + RemoveAxis {
+    pub fn index_axis(&self, axis: Axis, index: usize) -> TensorView<'_, D::Smaller> {
+        match self {
+            Tensor::Qi8(a) => TensorView::Qi8(a.index_axis(axis, index)),
+            Tensor::F32(a) => TensorView::F32(a.index_axis(axis, index)),
+        }
+    }
+}
+
+pub enum TensorView<'a, D: Dimension> {
+    Qi8(QintArrayView<'a, i8, D>),
+    F32(ArrayView<'a, f32, D>),
+}
+
+pub type TensorView1<'a> = TensorView<'a, Ix1>;
+pub type TensorView2<'a> = TensorView<'a, Ix2>;
+pub type TensorView3<'a> = TensorView<'a, Ix3>;
+
+impl<'a, D> TensorView<'a, D> where D: Dimension + RemoveAxis {
+    pub fn index_axis(&'a self, axis: Axis, index: usize) -> TensorView<'a, D::Smaller> {
+        match self {
+            TensorView::Qi8(a) => TensorView::Qi8(a.index_axis(axis, index)),
+            TensorView::F32(a) => TensorView::F32(a.index_axis(axis, index)),
+        }
+    }
+}
+
+impl<'a> TensorView<'a, Ix1> {
+    pub fn to_f32(&self) -> Array1<f32> {
+        match self {
+            TensorView::Qi8(a) => a.to_f32(),
+            TensorView::F32(a) => panic!("do better"), // TensorView::F32(a.to_owned()),
+        }
+    }
+}
+
+impl<'a> TensorView<'a, Ix2> {
+    pub fn shape(&self) -> &[usize] {
+        match self {
+            TensorView::Qi8(a) => a.arr.shape(),
+            TensorView::F32(a) => a.shape(),
+        }
+    }
+    pub fn dot<'b>(&'b self, other: TensorView<'a, Ix1>) -> Array1<f32> where 'b: 'a {
+        match (self, other) {
+            (TensorView::Qi8(a), TensorView::Qi8(b)) => a.dot(b),
+            (TensorView::F32(a), TensorView::F32(b)) => a.dot(&b),
+            _ => panic!("mismatched types"),
+        }
+    }
 }
 
 // Transformer configuration. Doesn't directly affect the model as it's based on llama2
@@ -93,13 +198,12 @@ impl Config {
         };
         if config.version != Version::Llama2C {
             println!("Version read: {:?}", config.version);
-            config.shared_weights = read_usize() != 0;
+            config.shared_weights = false;
             config.q_type = FromPrimitive::from_usize(read_usize())
                 .expect("invalid quantization type");
             config.q_stride = read_usize();
-        }
+        } else if config.vocab_size >= 2_usize.pow(31) {
         // a little whackiness in the format
-        if config.vocab_size >= 2_usize.pow(31) {
             config.vocab_size = (!(config.vocab_size as u32) + 1) as usize;
             config.shared_weights = false;
         }
@@ -115,7 +219,6 @@ impl Config {
         buf.write_u32::<LittleEndian>(self.n_kv_heads as u32)?;
         buf.write_u32::<LittleEndian>(self.vocab_size as u32)?;
         buf.write_u32::<LittleEndian>(self.seq_len as u32)?;
-        buf.write_u32::<LittleEndian>(self.shared_weights as u32)?;
         buf.write_u32::<LittleEndian>(self.q_type.to_usize().unwrap() as u32)?;
         buf.write_u32::<LittleEndian>(self.q_stride as u32)?;
         Ok(())
@@ -129,141 +232,88 @@ impl Config {
 // All weights in the Llama2 model. Read in bulk from a binary file.
 // note dim == n_heads * head_size
 pub struct Weights {
-    pub tet: QintArray2<WTy>, // (vocab_size, dim) token embeddings table
-    pub rms_att: QintArray2<WTy>, // (n_layers, dim) rmsnorm weights
-    pub rms_ffn: QintArray2<WTy>, // (n_layers, dim)
-    pub wq: QintArray3<WTy>, // (n_layers, dim, (n_heads * head_size))
-    pub wk: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
-    pub wv: QintArray3<WTy>, // (n_layers, dim, (n_kv_heads * head_size))
-    pub wo: QintArray3<WTy>, // (layer, (n_heads * head_size), dim)
-    pub w1: QintArray3<WTy>, // (n_layers, hidden_dim, dim)
-    pub w2: QintArray3<WTy>, // (n_layers, dim, hidden_dim)
-    pub w3: QintArray3<WTy>, // (n_layers, hidden_dim, dim)
-    pub rms_final: QintArray1<WTy>, // (dim)
-    pub wcls: QintArray2<WTy>, // (dim, vocab_size) optional, classifier weights for logits, on the last layer
-}
-
-fn read_i8<R, S, D>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray<i8, D>
-where
-    R: Read,
-    S: Into<StrideShape<D>>,
-    D: Dimension,
-{
-    let shape = shape.into();
-    let ndim = shape.raw_dim().ndim();
-    let mut scaling_shape = shape.raw_dim().clone();
-    scaling_shape[ndim-1] = scaling_shape[ndim-1] / conf.q_stride;
-
-    let scaling = read_array(buf, scaling_shape);
-    println!("Reading {} i8 quantized weights", shape.size());
-    let arr = read_array(buf, shape);
-
-    QintArray {
-        stride: conf.q_stride,
-        scaling,
-        arr,
-    }
-}
-
-fn read_f32_qi8<R, S, D>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> QintArray<i8, D>
-where
-    R: Read,
-    S: Into<StrideShape<D>>,
-    D: Dimension,
-{
-    let f32a = read_array(buf, shape);
-    let qa = QintArray::quantize(conf.q_stride, f32a.view());
-    // println!("loss: {:.3}%", qa.view().loss(&f32a.view())*100.0);
-    qa
+    pub tet: Tensor2, // (vocab_size, dim) token embeddings table
+    pub rms_att: Tensor2, // (n_layers, dim) rmsnorm weights
+    pub rms_ffn: Tensor2, // (n_layers, dim)
+    pub wq: Tensor3, // (n_layers, dim, (n_heads * head_size))
+    pub wk: Tensor3, // (n_layers, dim, (n_kv_heads * head_size))
+    pub wv: Tensor3, // (n_layers, dim, (n_kv_heads * head_size))
+    pub wo: Tensor3, // (layer, (n_heads * head_size), dim)
+    pub w1: Tensor3, // (n_layers, hidden_dim, dim)
+    pub w2: Tensor3, // (n_layers, dim, hidden_dim)
+    pub w3: Tensor3, // (n_layers, hidden_dim, dim)
+    pub rms_final: Tensor1, // (dim)
+    pub wcls: Tensor2, // (dim, vocab_size) optional, classifier weights for logits, on the last layer
 }
 
 impl Weights {
 
-    pub fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
-        if conf.version == Version::Llama2C {
-            println!("Reading a llama2c model...");
-            Self::read_llama2c(conf, buf)
-        } else {
-            println!("Reading a v1 model...");
-            Self::read_v1(conf, buf)
-        }
-    }
-    fn read_llama2c<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
+    fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
         let kv_dim = conf.n_kv_heads * conf.head_size();
-        let tet = read_f32_qi8(conf, buf, (conf.vocab_size, conf.dim));
+        let tet = Tensor::read(conf, buf, (conf.vocab_size, conf.dim));
         let mut w = Weights {
             tet: tet.clone(),
-            rms_att: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim)),
-            wq: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            wk: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wv: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wo: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            rms_ffn: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim)),
-            w1: read_f32_qi8(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            w2: read_f32_qi8(conf, buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
-            w3: read_f32_qi8(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final: read_f32_qi8(conf, buf, conf.dim),
+            rms_att: Tensor::read(conf, buf, (conf.n_layers, conf.dim)),
+            wq: Tensor::read(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
+            wk: Tensor::read(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
+            wv: Tensor::read(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
+            wo: Tensor::read(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
+            rms_ffn: Tensor::read(conf, buf, (conf.n_layers, conf.dim)),
+            w1: Tensor::read(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
+            w2: Tensor::read(conf, buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
+            w3: Tensor::read(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
+            rms_final: Tensor::read(conf, buf, conf.dim),
             wcls:  tet,
         };
         if !conf.shared_weights {
-            // skip the old 2 freq_cis_real and freq_cis imag (used to be for RoPE)
-            read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
-            read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
-
-            w.wcls = read_f32_qi8(conf, buf, (conf.vocab_size, conf.dim));
+            if conf.version == Version::Llama2C {
+                // skip the old 2 freq_cis_real and freq_cis imag (used to be for RoPE)
+                read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
+                read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
+            }
+            w.wcls = Tensor::read(conf, buf, (conf.vocab_size, conf.dim));
         }
         w
     }
 
-    fn read_v1<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
-        let kv_dim = conf.n_kv_heads * conf.head_size();
-        Weights {
-            tet: read_i8(conf, buf, (conf.vocab_size, conf.dim)),
-            rms_att: read_i8(conf, buf, (conf.n_layers, conf.dim)),
-            wq: read_i8(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            wk: read_i8(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wv: read_i8(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wo: read_i8(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            rms_ffn: read_i8(conf, buf, (conf.n_layers, conf.dim)),
-            w1: read_i8(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            w2: read_i8(conf, buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
-            w3: read_i8(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final: read_i8(conf, buf, conf.dim),
-            wcls: read_i8(conf, buf, (conf.vocab_size, conf.dim)),
-        }
-    }
-
     pub fn write<W: Write>(&self, buf: &mut W) -> io::Result<()> {
-        write_i8(&self.tet, buf)?;
-        write_i8(&self.rms_att, buf)?;
-        write_i8(&self.wq, buf)?;
-        write_i8(&self.wk, buf)?;
-        write_i8(&self.wv, buf)?;
-        write_i8(&self.wo, buf)?;
-        write_i8(&self.rms_ffn, buf)?;
-        write_i8(&self.w1, buf)?;
-        write_i8(&self.w2, buf)?;
-        write_i8(&self.w3, buf)?;
-        write_i8(&self.rms_final, buf)?;
-        write_i8(&self.wcls, buf)?;
+        write_qi8(&self.tet, buf)?;
+        write_qi8(&self.rms_att, buf)?;
+        write_qi8(&self.wq, buf)?;
+        write_qi8(&self.wk, buf)?;
+        write_qi8(&self.wv, buf)?;
+        write_qi8(&self.wo, buf)?;
+        write_qi8(&self.rms_ffn, buf)?;
+        write_qi8(&self.w1, buf)?;
+        write_qi8(&self.w2, buf)?;
+        write_qi8(&self.w3, buf)?;
+        write_qi8(&self.rms_final, buf)?;
+        write_qi8(&self.wcls, buf)?;
         Ok(())
     }
 }
 
-fn write_i8<W, D>(a: &QintArray<i8, D>, buf: &mut W) -> io::Result<()>
+// Write a quantized array to a byte buffer. The f32 scaling factors are written
+// first, followed by the quantized i8.
+fn write_qi8<W, D>(t: &Tensor<D>, buf: &mut W) -> io::Result<()>
 where
     W: Write,
     D: Dimension,
 {
-    for val in a.scaling.iter() {
+    let t = match t {
+        Tensor::Qi8(t) => t,
+        _ => panic!("expected i8 tensor"),
+    };
+    for val in t.scaling.iter() {
         buf.write_f32::<LittleEndian>(val.as_())?;
     }
-    for val in a.arr.iter() {
+    for val in t.arr.iter() {
         buf.write_i8(val.as_())?;
     }
     Ok(())
 }
 
+// Reads an array directly from a byte buffer, as fast as possible.
 fn read_array<R, T, D, S>(buf: &mut R, shape: S) -> Array<T, D>
 where
     R: BufRead,

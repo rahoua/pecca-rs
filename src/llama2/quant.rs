@@ -2,7 +2,11 @@
 use ndarray::prelude::*;
 use ndarray::{par_azip, RemoveAxis};
 
-// A quantized array constructed with a generic dimension
+// A bucket-quantized int array. The orignal f32 array is quantized into buckets
+// of size `stride`, and the scaling factor for each bucket is stored in the
+// `scaling` array. The resulting quantized ints are stored in a regular ndarray
+// Array of ints.
+// Currently only quantization to i8 is supported.
 #[derive(Debug, Clone)]
 pub struct QintArray<T, D> where D: Dimension {
     pub stride: usize,
@@ -24,6 +28,7 @@ impl<T, D> QintArray<T, D> where D: Dimension {
     }
 }
 
+// i8 quantization
 impl<D> QintArray<i8, D> where D: Dimension {
     pub fn quantize(stride: usize, fpa: ArrayView<f32, D>) -> Self {
         quant_i8(stride, fpa)
@@ -43,7 +48,8 @@ where
     }
 }
 
-// A quantized array constructed with a generic dimension
+// A quantized array view, similar to ndarray::ArrayView, but with stride and
+// scaling factor information.
 #[derive(Debug, Clone)]
 pub struct QintArrayView<'a, T, D> where D: Dimension {
     pub stride: usize,
@@ -54,7 +60,6 @@ pub struct QintArrayView<'a, T, D> where D: Dimension {
 impl<'a, 'b, T, D> QintArrayView<'a, T, D>
 where
     D: RemoveAxis,
-    <D as ndarray::Dimension>::Smaller: RemoveAxis
 {
     pub fn index_axis(&'a self, axis: Axis, index: usize) -> QintArrayView<'b, T, D::Smaller> where 'a: 'b {
         QintArrayView {
@@ -71,8 +76,8 @@ pub type QintArray1<T> = QintArray<T, Ix1>;
 pub type QintArrayView1<'a, T> = QintArrayView<'a, T, Ix1>;
 
 impl QintArrayView1<'_, i8> {
-    // almost all execution time is spent here, worth finicking over
     fn dot_deq(&self, other: &Self) -> f32 {
+        // almost all execution time is spent here, worth finicking over
         debug_assert_eq!(self.stride, other.stride);
         debug_assert_eq!(self.arr.len(), other.arr.len());
         debug_assert_eq!(self.scaling.len(), other.scaling.len());
