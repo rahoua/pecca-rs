@@ -50,7 +50,7 @@ impl<D> Tensor<D> where D: Dimension {
         R: Read,
         S: Into<StrideShape<D>>,
     {
-        if conf.q_type != QuantizationType::None {
+        if conf.q_type == QuantizationType::None {
             let f32a = read_array(buf, shape);
             // TODO command line switch to optionally quantize
             let qa = QintArray::quantize(conf.q_stride, f32a.view());
