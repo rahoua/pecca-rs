@@ -40,7 +40,6 @@ Llama2 model on a Macbook Pro M2 Max:
 
 A list of possible future developments for the project:
 
-* Make quantization optional with a feature flag.
 * Evaluation mode that runs both quantized and f32 inference at the same time to quantify quantization error.
 * Improved tokenizer.
 * Special mode for llama2 code (slight differences with other llama2s).

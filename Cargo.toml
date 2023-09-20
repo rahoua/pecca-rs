@@ -7,7 +7,7 @@ description = "Simple inference for the llama2 model and friends."
 [profile.release]
 lto = "fat"
 codegen-units = 1
-#debug = true
+debug = true
 #overflow-checks = true
 
 [dependencies]

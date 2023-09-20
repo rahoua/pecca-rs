@@ -38,6 +38,9 @@ struct Args {
     /// Write the quantized model to a file, much faster to load on subsequent runs
     #[arg(short, long)]
     write_model: Option<String>,
+    /// Forces quantization on-the-fly for f32 models
+    #[arg(short, long, default_value = "false")]
+    force_quantize: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -52,17 +55,19 @@ fn main() {
     // Initialize config from file
     let mut file = File::open(&args.model_file)
         .expect("Unable to open the checkpoint file");
-    let mut config = Config::from_file(&mut file)
+    let mut config = Config::read(&mut file)
         .expect("Failed to read the config");
-    println!("Reading model waits, takes a little while...");
 
     // Finish reading the checkpoint file by loading weights, at the moment we
     // quantize on the fly
-    config.q_type = QuantizationType::LinearI8;
-    config.q_stride = DEFAULT_STRIDE;
     let start = Instant::now();
+    println!("Reading model weights, takes a little while...");
     let mut reader = BufReader::with_capacity(1000*1000, file);
-    let weights = Weights::read(&config, &mut reader);
+    let weights = Weights::read(&config, args.force_quantize, &mut reader);
+    if args.force_quantize {
+        config.q_type = QuantizationType::LinearI8;
+        config.q_stride = DEFAULT_STRIDE;
+    }
     println!("Read model weights in {:.2}s.", start.elapsed().as_secs_f64());
 
     if args.write_model.is_some() {

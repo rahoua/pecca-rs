@@ -214,7 +214,11 @@ impl Transformer {
 
     // Simple quantization helper to reduce verbosity
     fn q1(&self, w: ArrayView1<ATy>) -> Tensor1 {
-        Tensor::Qi8(QintArray1::quantize(self.conf.q_stride, w.view()))
+        if self.conf.q_type == QuantizationType::LinearI8 {
+            Tensor::Qi8(QintArray1::quantize(self.conf.q_stride, w.view()))
+        } else {
+            Tensor::F32(w.to_owned())
+        }
     }
 
 }

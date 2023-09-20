@@ -42,27 +42,6 @@ pub type Tensor2 = Tensor<Ix2>;
 pub type Tensor3 = Tensor<Ix3>;
 
 impl<D> Tensor<D> where D: Dimension {
-    fn read<R, S>(conf: &Config, buf: &mut BufReader<R>, shape: S) -> Tensor<D>
-    where
-        R: Read,
-        S: Into<StrideShape<D>>,
-    {
-        if conf.q_type != QuantizationType::None {
-            let f32a = read_array(buf, shape);
-            // TODO command line switch to optionally quantize
-            let qa = QintArray::quantize(conf.q_stride, f32a.view());
-            Tensor::Qi8(qa)
-            // Tensor::F32(f32a)
-        } else {
-            let shape = shape.into();
-            Tensor::Qi8(QintArray {
-                stride: conf.q_stride,
-                scaling: read_array(buf, scaling_dim(shape.raw_dim(), conf.q_stride)),
-                arr: read_array(buf, shape),
-            })
-        }
-    }
-
     pub fn len(&self) -> usize {
         match self {
             Tensor::Qi8(a) => a.len(),
@@ -87,6 +66,50 @@ impl<D> Tensor<D> where D: Dimension + RemoveAxis {
     }
 }
 
+pub struct TensorReader<'a, R: BufRead> {
+    conf: &'a Config,
+    quantize: bool,
+    buf: &'a mut R,
+}
+
+impl<'a, R: BufRead> TensorReader<'a, R> {
+    pub fn new(conf: &'a Config, quantize: bool, buf: &'a mut R) -> TensorReader<'a, R> {
+        TensorReader { conf, quantize, buf }
+    }
+
+    fn read<D, S>(&mut self, shape: S) -> Tensor<D>
+    where
+        D: Dimension,
+        S: Into<StrideShape<D>>,
+    {
+        if self.conf.q_type == QuantizationType::None {
+            let f32a = read_array(self.buf, shape);
+            if self.quantize {
+                let qa = QintArray::quantize(DEFAULT_STRIDE, f32a.view());
+                Tensor::Qi8(qa)
+            } else {
+                Tensor::F32(f32a)
+            }
+        } else {
+            let shape = shape.into();
+            Tensor::Qi8(QintArray {
+                stride: self.conf.q_stride,
+                scaling: read_array(self.buf, scaling_dim(shape.raw_dim(), self.conf.q_stride)),
+                arr: read_array(self.buf, shape),
+            })
+        }
+    }
+
+    fn skip<S, D>(&mut self, shape: S)
+    where
+        D: Dimension,
+        S: Into<StrideShape<D>>,
+    {
+        read_array::<_, f32, _, _>(self.buf, shape);
+    }
+}
+
+
 pub enum TensorView<'a, D: Dimension> {
     Qi8(QintArrayView<'a, i8, D>),
     F32(ArrayView<'a, f32, D>),
@@ -109,7 +132,7 @@ impl<'a> TensorView<'a, Ix1> {
     pub fn to_f32(&self) -> Array1<f32> {
         match self {
             TensorView::Qi8(a) => a.to_f32(),
-            TensorView::F32(a) => panic!("do better"), // TensorView::F32(a.to_owned()),
+            TensorView::F32(a) => a.to_owned(),
         }
     }
 }
@@ -148,7 +171,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_file(file: &mut File) -> io::Result<Self> {
+    pub fn read(file: &mut File) -> io::Result<Self> {
         // the C code uses int, which is 4 bytes, we use usize because it's cleaner
         // down the road but requires a little size arithmetic
         let mut config_bytes = vec![0; CONFIG_SIZE];
@@ -159,7 +182,7 @@ impl Config {
         let mut version = Version::Llama2C;
         let version_num = LittleEndian::read_u32(&config_bytes[0..4]);
         if version_num < 50 {
-            let mut additional_bytes = vec![0; 4 * 4];
+            let mut additional_bytes = vec![0; 3 * 4];
             file.read_exact(&mut additional_bytes)?;
             config_bytes.extend_from_slice(&additional_bytes);
             config_bytes.drain(0..4);
@@ -202,16 +225,13 @@ impl Config {
     }
 
     pub fn write<W: Write>(&self, buf: &mut W) -> io::Result<()> {
-        buf.write_u32::<LittleEndian>(Version::V1.to_usize().unwrap() as u32)?;
-        buf.write_u32::<LittleEndian>(self.dim as u32)?;
-        buf.write_u32::<LittleEndian>(self.hidden_dim as u32)?;
-        buf.write_u32::<LittleEndian>(self.n_layers as u32)?;
-        buf.write_u32::<LittleEndian>(self.n_heads as u32)?;
-        buf.write_u32::<LittleEndian>(self.n_kv_heads as u32)?;
-        buf.write_u32::<LittleEndian>(self.vocab_size as u32)?;
-        buf.write_u32::<LittleEndian>(self.seq_len as u32)?;
-        buf.write_u32::<LittleEndian>(self.q_type.to_usize().unwrap() as u32)?;
-        buf.write_u32::<LittleEndian>(self.q_stride as u32)?;
+        for attr in vec![
+            Version::V1.to_usize().unwrap(), self.dim, self.hidden_dim, self.n_layers,
+            self.n_heads, self.n_kv_heads, self.vocab_size, self.seq_len,
+            self.q_type.to_usize().unwrap(), self.q_stride,
+        ] {
+            buf.write_u32::<LittleEndian>(attr as u32)?;
+        }
         Ok(())
     }
 
@@ -239,30 +259,31 @@ pub struct Weights {
 
 impl Weights {
 
-    pub fn read<R: Read>(conf: &Config, buf: &mut BufReader<R>) -> Self {
+    pub fn read<R: Read>(conf: &Config, quantize: bool, buf: &mut BufReader<R>) -> Self {
         let kv_dim = conf.n_kv_heads * conf.head_size();
-        let tet = Tensor::read(conf, buf, (conf.vocab_size, conf.dim));
+        let mut tr = TensorReader::new(conf, quantize, buf);
+        let tet = tr.read((conf.vocab_size, conf.dim));
         let mut w = Weights {
             tet: tet.clone(),
-            rms_att: Tensor::read(conf, buf, (conf.n_layers, conf.dim)),
-            wq: Tensor::read(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            wk: Tensor::read(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wv: Tensor::read(conf, buf, (conf.n_layers, conf.dim, kv_dim)),
-            wo: Tensor::read(conf, buf, (conf.n_layers, conf.dim, conf.dim)),
-            rms_ffn: Tensor::read(conf, buf, (conf.n_layers, conf.dim)),
-            w1: Tensor::read(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            w2: Tensor::read(conf, buf, (conf.n_layers, conf.dim, conf.hidden_dim)),
-            w3: Tensor::read(conf, buf, (conf.n_layers, conf.hidden_dim, conf.dim)),
-            rms_final: Tensor::read(conf, buf, conf.dim),
+            rms_att: tr.read((conf.n_layers, conf.dim)),
+            wq: tr.read((conf.n_layers, conf.dim, conf.dim)),
+            wk: tr.read((conf.n_layers, conf.dim, kv_dim)),
+            wv: tr.read((conf.n_layers, conf.dim, kv_dim)),
+            wo: tr.read((conf.n_layers, conf.dim, conf.dim)),
+            rms_ffn: tr.read((conf.n_layers, conf.dim)),
+            w1: tr.read((conf.n_layers, conf.hidden_dim, conf.dim)),
+            w2: tr.read((conf.n_layers, conf.dim, conf.hidden_dim)),
+            w3: tr.read((conf.n_layers, conf.hidden_dim, conf.dim)),
+            rms_final: tr.read(conf.dim),
             wcls:  tet,
         };
         if !conf.shared_weights {
             if conf.version == Version::Llama2C {
                 // skip the old 2 freq_cis_real and freq_cis imag (used to be for RoPE)
-                read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
-                read_array::<_, f32, _, _>(buf, (conf.seq_len, conf.head_size()/2));
+                tr.skip((conf.seq_len, conf.head_size()/2));
+                tr.skip((conf.seq_len, conf.head_size()/2));
             }
-            w.wcls = Tensor::read(conf, buf, (conf.vocab_size, conf.dim));
+            w.wcls = tr.read((conf.vocab_size, conf.dim));
         }
         w
     }
