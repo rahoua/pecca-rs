@@ -57,10 +57,11 @@ pub struct QintArrayView<'a, T, D> where D: Dimension {
     pub arr: ArrayView<'a, T, D>
 }
 
-impl<'a, 'b, T, D> QintArrayView<'a, T, D>
-where
-    D: RemoveAxis,
-{
+impl<'a, 'b, T, D: RemoveAxis> QintArrayView<'a, T, D> {
+    pub fn len(&self) -> usize {
+        self.arr.len()
+    }
+
     pub fn index_axis(&'a self, axis: Axis, index: usize) -> QintArrayView<'b, T, D::Smaller> where 'a: 'b {
         QintArrayView {
             stride: self.stride,
@@ -111,8 +112,8 @@ pub type QintArray2<T> = QintArray<T, Ix2>;
 
 pub type QintArrayView2<'a, T> = QintArrayView<'a, T, Ix2>;
 
-impl<'a, 'b> QintArrayView2<'a, i8> {
-    pub fn dot(&'a self, x: QintArrayView1<'b, i8>) -> Array1<f32> where 'a: 'b {
+impl<'a> QintArrayView2<'a, i8> {
+    pub fn dot<'b>(&'b self, x: QintArrayView1<'b, i8>) -> Array1<f32> {
         let mut res = Array1::zeros(self.arr.shape()[0]);
         par_azip!((
             dot in res.view_mut(),

@@ -120,10 +120,31 @@ pub type TensorView2<'a> = TensorView<'a, Ix2>;
 pub type TensorView3<'a> = TensorView<'a, Ix3>;
 
 impl<'a, D> TensorView<'a, D> where D: Dimension + RemoveAxis {
+    pub fn len(&self) -> usize {
+        match self {
+            TensorView::Qi8(a) => a.len(),
+            TensorView::F32(a) => a.len(),
+        }
+    }
+
+    pub fn is_quantized(&self) -> bool {
+        match self {
+            TensorView::Qi8(_) => true,
+            TensorView::F32(_) => false,
+        }
+    }
+
     pub fn index_axis(&'a self, axis: Axis, index: usize) -> TensorView<'a, D::Smaller> {
         match self {
             TensorView::Qi8(a) => TensorView::Qi8(a.index_axis(axis, index)),
             TensorView::F32(a) => TensorView::F32(a.index_axis(axis, index)),
+        }
+    }
+
+    pub fn unwrap_f32<'b>(&'b self) -> ArrayView<'b, f32, D> {
+        match self {
+            TensorView::Qi8(_) => panic!("expected f32 tensor"),
+            TensorView::F32(a) => a.view(),
         }
     }
 }
@@ -144,7 +165,7 @@ impl<'a> TensorView<'a, Ix2> {
             TensorView::F32(a) => a.shape(),
         }
     }
-    pub fn dot<'b>(&'b self, other: TensorView<'a, Ix1>) -> Array1<f32> where 'b: 'a {
+    pub fn dot<'b>(&'b self, other: TensorView<'b, Ix1>) -> Array1<f32> {
         match (self, other) {
             (TensorView::Qi8(a), TensorView::Qi8(b)) => a.dot(b),
             (TensorView::F32(a), TensorView::F32(b)) => a.dot(&b),

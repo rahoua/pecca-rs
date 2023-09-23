@@ -32,8 +32,9 @@ To get the llama2 models, follow the [instructions](https://github.com/karpathy/
 At the moment there's no formal benchmark, we just provide rough estimates to give a ballpark of overall performance.
 
 Llama2 model on a Macbook Pro M2 Max:
-* llama2.c: 4 tok/s
+* llama2.c, f32: 4 tok/s
 * llama.cpp, Q4KM quantization: 24 tok/s
+* pecca, f32: 4 tok/s
 * pecca, i8 quantization: 11 tok/s
 
 ## Future Directions
@@ -49,3 +50,4 @@ A list of possible future developments for the project:
 * Additional parallelization of independent operations.
 * Various refactoring.
 * Support for additional models.
+

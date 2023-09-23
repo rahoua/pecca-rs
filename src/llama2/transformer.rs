@@ -16,14 +16,20 @@ const ATY_ONE: ATy = 1.0;
 
 fn rmsnorm(o: ArrayViewMut1<ATy>, x: ArrayView1<ATy>, weight: TensorView1) {
     // calculate sum of squares
-    let xlen: ATy = x.len().as_();
-    let low_val: ATy = 1e-5.as_();
-    let ss = (x.dot(&x) / xlen + low_val).sqrt().recip();
+    let ss = (x.dot(&x) / x.len() as ATy + 1e-5).sqrt().recip();
 
     // normalize and scale
-    azip!((o_val in o, &x_val in x, &weight_val in weight.to_f32().view()) {
-        *o_val = weight_val * ss * x_val;
-    });
+    if weight.is_quantized() {
+        let weight = weight.to_f32();
+        azip!((o_val in o, &x_val in x, &weight_val in weight.view()) {
+            *o_val = weight_val * ss * x_val;
+        });
+    } else {
+        let weight = weight.unwrap_f32();
+        azip!((o_val in o, &x_val in x, &weight_val in weight) {
+            *o_val = weight_val * ss * x_val;
+        });
+    }
 }
 
 pub fn softmax(x: &mut ArrayViewMut1<ATy>) {
@@ -32,10 +38,17 @@ pub fn softmax(x: &mut ArrayViewMut1<ATy>) {
     *x /= x.sum();
 }
 
-fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &'a Tensor1, w: &'a TensorView2<'a>) {
+fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &Array1<ATy>, w: &TensorView2<'a>) {
     debug_assert_eq!(w.shape(), &[xout.len(), x.len()]);
 
-    xout.assign(&w.dot(x.view()));
+    if w.is_quantized() {
+        let xq = Tensor::Qi8(QintArray1::quantize(DEFAULT_STRIDE, x.view()));
+        xout.assign(&w.dot(xq.view()));
+    } else {
+        par_azip!((out_val in xout, row in w.unwrap_f32().outer_iter()) {
+            *out_val = row.dot(x);
+        });
+    }
 }
 
 // sine and cosine tables for RoPE
@@ -98,10 +111,9 @@ impl Transformer {
             rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_att.index_axis(Axis(0), l));
 
             // qkv matmuls for this position
-            let xbq = self.q1(self.xb.view());
-            matmul(self.q.view_mut(), &xbq, &self.w.wq.index_axis(Axis(0), l));
-            matmul(self.k.view_mut(), &xbq, &self.w.wk.index_axis(Axis(0), l));
-            matmul(self.v.view_mut(), &xbq, &self.w.wv.index_axis(Axis(0), l));
+            matmul(self.q.view_mut(), &self.xb, &self.w.wq.index_axis(Axis(0), l));
+            matmul(self.k.view_mut(), &self.xb, &self.w.wk.index_axis(Axis(0), l));
+            matmul(self.v.view_mut(), &self.xb, &self.w.wv.index_axis(Axis(0), l));
 
             self.rope_enc(&sin_cos);
 
@@ -109,8 +121,7 @@ impl Transformer {
             self.attention(l, pos);
 
             // final matmul to get the output of the attention
-            let xbq = self.q1(self.xb.view());
-            matmul(self.xb2.view_mut(), &xbq, &self.w.wo.index_axis(Axis(0), l));
+            matmul(self.xb2.view_mut(), &self.xb, &self.w.wo.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb2.view();
@@ -120,9 +131,8 @@ impl Transformer {
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
             // first calculate self.w1(x) and self.w3(x)
-            let xbq = self.q1(self.xb.view());
-            matmul(self.hb.view_mut(), &xbq, &self.w.w1.index_axis(Axis(0), l));
-            matmul(self.hb2.view_mut(), &xbq, &self.w.w3.index_axis(Axis(0), l));
+            matmul(self.hb.view_mut(), &self.xb, &self.w.w1.index_axis(Axis(0), l));
+            matmul(self.hb2.view_mut(), &self.xb, &self.w.w3.index_axis(Axis(0), l));
 
             // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
             self.hb.iter_mut().for_each(|value| {
@@ -132,8 +142,7 @@ impl Transformer {
             self.hb *= &self.hb2;
 
             // final matmul
-            let hbq = self.q1(self.hb.view());
-            matmul(self.xb.view_mut(), &hbq, &self.w.w2.index_axis(Axis(0), l));
+            matmul(self.xb.view_mut(), &self.hb, &self.w.w2.index_axis(Axis(0), l));
 
             // residual connection back into x
             self.x += &self.xb;
@@ -143,8 +152,7 @@ impl Transformer {
         rmsnorm(self.xb.view_mut(), self.x.view(), self.w.rms_final.view());
 
         // Class logits
-        let xbq = self.q1(self.xb.view());
-        matmul(self.logits.view_mut(), &xbq, &self.w.wcls.view());
+        matmul(self.logits.view_mut(), &self.xb, &self.w.wcls.view());
 
         return self.logits.view_mut();
     }
@@ -211,14 +219,4 @@ impl Transformer {
             }
         }
     }
-
-    // Simple quantization helper to reduce verbosity
-    fn q1(&self, w: ArrayView1<ATy>) -> Tensor1 {
-        if self.conf.q_type == QuantizationType::LinearI8 {
-            Tensor::Qi8(QintArray1::quantize(self.conf.q_stride, w.view()))
-        } else {
-            Tensor::F32(w.to_owned())
-        }
-    }
-
 }
