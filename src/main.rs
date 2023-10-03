@@ -49,6 +49,7 @@ struct Args {
 enum Mode {
     Generate,
     Chat,
+    Compare,
 }
 
 fn main() {
@@ -60,8 +61,7 @@ fn main() {
     let mut config = Config::read(&mut file)
         .expect("Failed to read the config");
 
-    // Finish reading the checkpoint file by loading weights, at the moment we
-    // quantize on the fly
+    // Finish reading the checkpoint file by loading weights
     let start = Instant::now();
     println!("Reading model weights, takes a little while...");
     let mut reader = BufReader::with_capacity(1000*1000, file);
@@ -87,14 +87,27 @@ fn main() {
     let tok = Tokenizer::read("./models/tokenizer.bin", config.vocab_size)
         .expect("Failed to load tokenizer");
 
-    let mut trans = Transformer::new(config, weights);
     let sampler = Sampler::new(args.temperature);
 
     match args.mode {
-        Mode::Generate =>
-            generate(&mut trans, &tok, &sampler, steps, args.prompt),
-        Mode::Chat =>
-            chat(&mut trans, &tok, &sampler, steps, args.prompt, args.system_prompt),
+        Mode::Generate => {
+            let mut trans = Transformer::new(&config, weights);
+            generate(&mut trans, &tok, &sampler, steps, args.prompt);
+        }
+        Mode::Chat => {
+            let mut trans = Transformer::new(&config, weights);
+            chat(&mut trans, &tok, &sampler, steps, args.prompt, args.system_prompt);
+        }
+        Mode::Compare => {
+            let weights_q = weights.quantize();
+
+            let mut trans = Transformer::new(&config, weights);
+            generate(&mut trans, &tok, &sampler, steps, args.prompt.clone());
+
+            let mut trans_q = Transformer::new(&config, weights_q);
+            generate(&mut trans_q, &tok, &sampler, steps, args.prompt);
+        }
+
     }
 }
 

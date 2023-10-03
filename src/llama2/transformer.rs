@@ -80,7 +80,7 @@ pub struct Transformer {
 }
 
 impl Transformer {
-    pub fn new(config: Config, weights: Weights) -> Transformer {
+    pub fn new(config: &Config, weights: Weights) -> Transformer {
         let a1_dim = Array1::from_elem(config.dim, ATY_ZERO);
         Transformer {
             x: a1_dim.clone(),
@@ -95,7 +95,7 @@ impl Transformer {
             logits: Array1::from_elem(config.vocab_size, ATY_ZERO),
             key_cache: Array3::from_elem((config.n_layers, config.seq_len, config.dim), ATY_ZERO),
             value_cache: Array3::from_elem((config.n_layers, config.seq_len, config.dim), ATY_ZERO),
-            conf: config,
+            conf: config.clone(),
             w: weights,
         }
     }
@@ -163,8 +163,14 @@ impl Transformer {
         let hs_sqrt = <usize as AsPrimitive<ATy>>::as_(hs).sqrt();
 
         // save key,value at this time step (pos) to our kv cache
-        self.key_cache.index_axis_mut(Axis(0), layer).index_axis_mut(Axis(0), pos).assign(&self.k);
-        self.value_cache.index_axis_mut(Axis(0), layer).index_axis_mut(Axis(0), pos).assign(&self.v);
+        self.key_cache
+            .index_axis_mut(Axis(0), layer)
+            .index_axis_mut(Axis(0), pos)
+            .assign(&self.k);
+        self.value_cache
+            .index_axis_mut(Axis(0), layer)
+            .index_axis_mut(Axis(0), pos)
+            .assign(&self.v);
 
         let layer_key_cache = self.key_cache.index_axis(Axis(0), layer);
         let layer_value_cache = self.value_cache.index_axis(Axis(0), layer);

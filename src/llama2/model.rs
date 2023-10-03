@@ -55,6 +55,13 @@ impl<D> Tensor<D> where D: Dimension {
             Tensor::F32(a) => TensorView::F32(a.view()),
         }
     }
+
+    pub fn quantize(&self) -> Tensor<D> {
+        match self {
+            Tensor::Qi8(_) => panic!("Already quantized!"),
+            Tensor::F32(a) => Tensor::Qi8(QintArray::quantize(DEFAULT_STRIDE, a.view())),
+        }
+    }
 }
 
 impl<D> Tensor<D> where D: Dimension + RemoveAxis {
@@ -176,7 +183,7 @@ impl<'a> TensorView<'a, Ix2> {
 
 // Transformer configuration. Doesn't directly affect the model as it's based on llama2
 // but allows variations in dimensions, number of layers, etc.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Config {
     pub version: Version, // version number, currently 1
     pub dim: usize, // transformer dimension
@@ -323,6 +330,25 @@ impl Weights {
         write_qi8(&self.rms_final, buf)?;
         write_qi8(&self.wcls, buf)?;
         Ok(())
+    }
+
+    // Quantizes this model. Quantization is typically done on read to avoid copying
+    // the model, but this for inference results comparison.
+    pub fn quantize(&self) -> Self {
+        Weights {
+            tet: self.tet.quantize(),
+            rms_att: self.rms_att.quantize(),
+            wq: self.wq.quantize(),
+            wk: self.wk.quantize(),
+            wv: self.wv.quantize(),
+            wo: self.wo.quantize(),
+            rms_ffn: self.rms_ffn.quantize(),
+            w1: self.w1.quantize(),
+            w2: self.w2.quantize(),
+            w3: self.w3.quantize(),
+            rms_final: self.rms_final.quantize(),
+            wcls: self.wcls.quantize(),
+        }
     }
 }
 
