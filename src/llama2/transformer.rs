@@ -100,7 +100,7 @@ impl Transformer {
             conf: config.clone(),
             w: weights,
             // TODO bit of a hack to detect codellama
-            rope_theta: if config.vocab_size > 30000 { 1000000.0 } else { 10000.0 },
+            rope_theta: if config.vocab_size > 32000 { 1000000.0 } else { 10000.0 },
         }
     }
 
