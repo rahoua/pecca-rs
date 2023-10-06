@@ -108,8 +108,6 @@ impl QintArrayView1<'_, i8> {
     }
 }
 
-pub type QintArray2<T> = QintArray<T, Ix2>;
-
 pub type QintArrayView2<'a, T> = QintArrayView<'a, T, Ix2>;
 
 impl<'a> QintArrayView2<'a, i8> {
@@ -142,8 +140,6 @@ impl<'a> QintArrayView2<'a, i8> {
     }
 
 }
-
-pub type QintArray3<T> = QintArray<T, Ix3>;
 
 pub type QintArrayView3<'a, T> = QintArrayView<'a, T, Ix3>;
 

@@ -25,13 +25,19 @@ Pecca can be run similarly with larger tiny stories models (like the 110M one) o
 pecca-rs --help
 ```
 
-To get the llama2 models, follow the [instructions](https://github.com/karpathy/llama2.c#metas-llama-2-models) for llama2.c. Pecca supports the same model format. As Pecca does not use memmap, loading and quantizing the model on the fly can take some time. To speed things up, the models can also be saved quantized using the `--write-model` command line switch.
+To get the llama2 models, follow the [instructions](https://github.com/karpathy/llama2.c#metas-llama-2-models) for llama2.c. Pecca supports the same model format. As Pecca does not use memmap, loading and quantizing the model on the fly can take some time. To speed things up, the models can also be saved quantized using the `-f --write-model <path>` command line switch.
+
+For codellama, the instructions are similar except for the tokenizer which is slightly different. To make the process easier, the updated tokenizer is provided. To override the default tokenizer, run pecca using the `-k` command line option:
+
+```
+./target/release/pecca-rs generate /path/to/codellama-instr-7b.bin -k "./models/tokenizer-code.bin"
+```
 
 ## Performance
 
 At the moment there's no formal benchmark, we just provide rough estimates to give a ballpark of overall performance.
 
-Llama2 model on a Macbook Pro M2 Max:
+Llama2 7B model on a Macbook Pro M2 Max:
 * llama2.c, f32: 4 tok/s
 * llama.cpp, Q4KM quantization: 24 tok/s
 * pecca, f32: 4 tok/s
@@ -41,9 +47,7 @@ Llama2 model on a Macbook Pro M2 Max:
 
 A list of possible future developments for the project:
 
-* Evaluation mode that runs both quantized and f32 inference at the same time to quantify quantization error.
 * Improved tokenizer.
-* Special mode for llama2 code (slight differences with other llama2s).
 * Inference performance and general memory footprint during inference.
 * Experiment with [SmoothQuant](https://arxiv.org/abs/2211.10438)
 * Explore extending ndarray `dot` operation to support cublas or Metal.

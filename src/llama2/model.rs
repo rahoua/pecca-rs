@@ -124,7 +124,6 @@ pub enum TensorView<'a, D: Dimension> {
 
 pub type TensorView1<'a> = TensorView<'a, Ix1>;
 pub type TensorView2<'a> = TensorView<'a, Ix2>;
-pub type TensorView3<'a> = TensorView<'a, Ix3>;
 
 impl<'a, D> TensorView<'a, D> where D: Dimension + RemoveAxis {
     pub fn len(&self) -> usize {
@@ -239,13 +238,13 @@ impl Config {
             q_stride: 0,
         };
         if config.version != Version::Llama2C {
-            println!("Version read: {:?}", config.version);
             config.shared_weights = false;
             config.q_type = FromPrimitive::from_usize(read_usize())
                 .expect("invalid quantization type");
             config.q_stride = read_usize();
+            println!("Version {:?}, quantized {:?}", config.version, config.q_type);
         } else if config.vocab_size >= 2_usize.pow(31) {
-        // a little whackiness in the format
+            // a little whackiness in the format
             config.vocab_size = (!(config.vocab_size as u32) + 1) as usize;
             config.shared_weights = false;
         }
@@ -361,7 +360,7 @@ where
 {
     let t = match t {
         Tensor::Qi8(t) => t,
-        _ => panic!("expected i8 tensor"),
+        _ => panic!("expected i8 tensor, did you mean to force quantization?"),
     };
     for val in t.scaling.iter() {
         buf.write_f32::<LittleEndian>(val.as_())?;

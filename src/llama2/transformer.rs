@@ -52,10 +52,10 @@ fn matmul<'a>(mut xout: ArrayViewMut1<ATy>, x: &Array1<ATy>, w: &TensorView2<'a>
 }
 
 // sine and cosine tables for RoPE
-fn sin_cos(pos: usize, dim: usize, head_size: usize) -> Vec<(ATy, ATy)> {
+fn sin_cos(pos: usize, dim: usize, head_size: usize, theta: f32) -> Vec<(ATy, ATy)> {
     (0..dim / 2).map(|i| {
         let head_dim = ((i * 2) % head_size) as ATy;
-        let pos_freq = (pos as f32) * (1.0 / (10000.0f32).powf(head_dim / head_size as ATy));
+        let pos_freq = (pos as f32) * (1.0 / theta.powf(head_dim / head_size as ATy));
         pos_freq.sin_cos()
     }).collect()
 }
@@ -77,11 +77,13 @@ pub struct Transformer {
 
     conf: Config,
     w: Weights,
+    rope_theta: f32,
 }
 
 impl Transformer {
     pub fn new(config: &Config, weights: Weights) -> Transformer {
         let a1_dim = Array1::from_elem(config.dim, ATY_ZERO);
+        println!("vocab_size: {}", config.vocab_size);
         Transformer {
             x: a1_dim.clone(),
             xb: a1_dim.clone(),
@@ -97,11 +99,13 @@ impl Transformer {
             value_cache: Array3::from_elem((config.n_layers, config.seq_len, config.dim), ATY_ZERO),
             conf: config.clone(),
             w: weights,
+            // TODO bit of a hack to detect codellama
+            rope_theta: if config.vocab_size > 30000 { 1000000.0 } else { 10000.0 },
         }
     }
 
     pub fn forward(&mut self, token: usize, pos: usize) -> ArrayViewMut1<ATy> {
-        let sin_cos = sin_cos(pos, self.conf.dim, self.conf.head_size());
+        let sin_cos = sin_cos(pos, self.conf.dim, self.conf.head_size(), self.rope_theta);
         // copy the token embedding into x
         self.x.assign(&self.w.tet.index_axis(Axis(0), token).to_f32().view());
 

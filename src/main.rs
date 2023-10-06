@@ -43,6 +43,9 @@ struct Args {
     /// Forces quantization on-the-fly for f32 models
     #[arg(short, long, default_value = "false")]
     force_quantize: bool,
+    /// Overrides default tokenizer
+    #[arg(short = 'k', long)]
+    tokenizer: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -84,7 +87,8 @@ fn main() {
 
     let steps = args.steps.max(1).min(config.seq_len);
 
-    let tok = Tokenizer::read("./models/tokenizer.bin", config.vocab_size)
+    let tokenizer_path = args.tokenizer.unwrap_or("./models/tokenizer.bin".to_string());
+    let tok = Tokenizer::read(&tokenizer_path, config.vocab_size)
         .expect("Failed to load tokenizer");
 
     let sampler = Sampler::new(args.temperature);
